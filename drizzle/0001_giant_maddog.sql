@@ -1,0 +1,1 @@
+ALTER TABLE `clips` ADD `extension_count` integer DEFAULT 0 NOT NULL;

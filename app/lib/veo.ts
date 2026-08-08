@@ -4,6 +4,7 @@ const MODEL = "veo-3.1-fast-generate-001";
 const LOCATION = "us-central1";
 
 type StartResponse = { name?: string };
+export type VeoVideo = { base64: string; mimeType: string };
 type StatusResponse = {
   done?: boolean;
   error?: { message?: string };
@@ -14,16 +15,19 @@ type StatusResponse = {
   };
 };
 
-export async function startVeoClip(prompt: string, seed: number) {
+function generationEndpoint(method: "predictLongRunning" | "fetchPredictOperation") {
   const project = getGoogleProjectNumber();
-  const endpoint = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${project}/locations/${LOCATION}/publishers/google/models/${MODEL}:predictLongRunning`;
-  const result = await googleJson<StartResponse>(endpoint, {
+  return `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${project}/locations/${LOCATION}/publishers/google/models/${MODEL}:${method}`;
+}
+
+export async function startVeoClip(prompt: string, seed: number, durationSeconds: 6 | 8 = 8) {
+  const result = await googleJson<StartResponse>(generationEndpoint("predictLongRunning"), {
     method: "POST",
     body: JSON.stringify({
       instances: [{ prompt }],
       parameters: {
         sampleCount: 1,
-        durationSeconds: 8,
+        durationSeconds,
         aspectRatio: "16:9",
         resolution: "720p",
         generateAudio: true,
@@ -40,13 +44,38 @@ export async function startVeoClip(prompt: string, seed: number) {
   return result.name;
 }
 
+export async function startVeoExtension(video: VeoVideo, prompt: string) {
+  const result = await googleJson<StartResponse>(generationEndpoint("predictLongRunning"), {
+    method: "POST",
+    body: JSON.stringify({
+      instances: [
+        {
+          prompt,
+          video: {
+            mimeType: video.mimeType,
+            bytesBase64Encoded: video.base64,
+          },
+        },
+      ],
+      parameters: {
+        task: "extend",
+        sampleCount: 1,
+        resolution: "720p",
+        generateAudio: true,
+      },
+    }),
+  });
+
+  if (!result.name) throw new Error("Veo did not return an extension job.");
+  return result.name;
+}
+
 export async function pollVeoClip(operationName: string) {
   const project = getGoogleProjectNumber();
   const expectedPrefix = `projects/${project}/locations/${LOCATION}/publishers/google/models/${MODEL}/operations/`;
   if (!operationName.startsWith(expectedPrefix)) throw new Error("Invalid provider job.");
 
-  const endpoint = `https://${LOCATION}-aiplatform.googleapis.com/v1/projects/${project}/locations/${LOCATION}/publishers/google/models/${MODEL}:fetchPredictOperation`;
-  const result = await googleJson<StatusResponse>(endpoint, {
+  const result = await googleJson<StatusResponse>(generationEndpoint("fetchPredictOperation"), {
     method: "POST",
     body: JSON.stringify({ operationName }),
   });

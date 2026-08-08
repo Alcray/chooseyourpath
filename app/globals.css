@@ -421,6 +421,10 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .progress-summary strong { color: var(--forest); font-size: 12px; }
 .progress-summary > div span { color: #7b887f; }
 .progress-summary > span { flex: 0 0 auto; padding: 6px 9px; border-radius: 999px; background: #f0f4ef; font-weight: 750; }
+.generation-line { height: 7px; overflow: hidden; margin-bottom: 7px; border-radius: 999px; background: #e5ebe5; box-shadow: inset 0 1px 2px rgba(29,60,43,.08); }
+.generation-line i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--sage), var(--gold)); transition: width 500ms ease; }
+.generation-units { margin: 0 1px 12px; color: #7b887f; font-size: 8px; }
+.generation-units strong { color: var(--forest); }
 .progress-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
 .progress-segment { position: relative; min-height: 64px; display: flex; align-items: center; gap: 9px; overflow: hidden; padding: 10px; border: 1px solid #dce3dd; border-radius: 12px; background: #f5f7f4; transition: border-color 250ms ease, background 250ms ease; }
 .progress-segment > span { width: 29px; height: 29px; display: grid; place-items: center; z-index: 1; flex: 0 0 auto; color: #7a877f; border-radius: 50%; background: white; box-shadow: 0 0 0 1px #d8e0da; font-size: 8px; font-weight: 900; }
@@ -429,12 +433,18 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .progress-segment small { color: #89948d; font-size: 7px; }
 .progress-segment.starting,
 .progress-segment.rendering,
+.progress-segment.extension_retry,
+.progress-segment.extending,
 .progress-segment.ingesting { border-color: #e9c97e; background: #fff7e4; }
 .progress-segment.starting::after,
 .progress-segment.rendering::after,
+.progress-segment.extension_retry::after,
+.progress-segment.extending::after,
 .progress-segment.ingesting::after { content: ""; position: absolute; inset: auto 0 0; height: 4px; background: repeating-linear-gradient(90deg, var(--gold) 0 18px, #f7d995 18px 36px); background-size: 72px 100%; animation: progressStripe 1.2s linear infinite; }
 .progress-segment.starting > span,
 .progress-segment.rendering > span,
+.progress-segment.extension_retry > span,
+.progress-segment.extending > span,
 .progress-segment.ingesting > span { color: #76571b; box-shadow: 0 0 0 2px rgba(239,179,77,.28); }
 .progress-segment.ready { border-color: #b7d1bd; background: #edf6ec; }
 .progress-segment.ready > span { color: white; background: #64a075; box-shadow: none; font-size: 13px; }
@@ -454,18 +464,22 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .render-card > p { min-height: 49px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .status-dot { width: 9px; height: 9px; border: 2px solid #cdd5ce; border-radius: 50%; }
 .render-card.rendering .status-dot,
+.render-card.extension_retry .status-dot,
+.render-card.extending .status-dot,
 .render-card.ingesting .status-dot,
 .render-card.starting .status-dot { border-color: var(--gold); border-top-color: transparent; animation: spin 800ms linear infinite; }
 .render-card.ready .status-dot { border: 0; background: #64a075; box-shadow: 0 0 0 4px rgba(100,160,117,.12); }
 .render-card.failed .status-dot { border: 0; background: var(--orange); }
 .clip-progress { height: 5px; margin: 19px 0 10px; overflow: hidden; border-radius: 999px; background: #e7ece6; }
-.clip-progress i { display: block; width: 34%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--sage), var(--gold)); transform: translateX(-120%); }
+.clip-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--sage), var(--gold)); transition: width 500ms ease; }
 .render-card.starting .clip-progress i,
 .render-card.rendering .clip-progress i,
-.render-card.ingesting .clip-progress i { animation: clipSweep 1.5s ease-in-out infinite; }
+.render-card.extension_retry .clip-progress i,
+.render-card.extending .clip-progress i,
+.render-card.ingesting .clip-progress i { animation: clipPulse 1.5s ease-in-out infinite; }
 .render-card.ready .clip-progress i { width: 100%; background: #64a075; transform: none; }
 .render-card.failed .clip-progress i { width: 100%; background: var(--orange); transform: none; }
-@keyframes clipSweep { to { transform: translateX(300%); } }
+@keyframes clipPulse { 50% { filter: brightness(1.18); opacity: .72; } }
 .job-label { color: #66746c; font-size: 9px; }
 .render-card.ready .job-label { color: #39714a; }
 .render-card.failed .job-label { color: #9a5134; }
@@ -577,7 +591,9 @@ a:focus-visible { outline: 3px solid rgba(239, 179, 77, 0.72); outline-offset: 3
   .player-heading h1 { font-size: 40px; }
   .choice-preview { padding: 20px; }
   .render-card { min-height: 210px; }
-  .decision-overlay { justify-content: flex-end; padding: 16px; }
+  .video-player-shell { min-height: min(390px, 110vw); aspect-ratio: auto; }
+  .story-clip-video { object-fit: contain; }
+  .decision-overlay { justify-content: center; overflow-y: auto; padding: 16px; }
   .decision-overlay > div { grid-template-columns: 1fr; }
   .decision-overlay h2 { margin-bottom: 14px; font-size: 23px; }
   .decision-overlay button { min-height: 57px; }

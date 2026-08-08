@@ -40,6 +40,7 @@ export const clips = sqliteTable(
     slot: text("slot").notNull(),
     status: text("status").notNull(),
     providerJobId: text("provider_job_id"),
+    extensionCount: integer("extension_count").notNull().default(0),
     r2Key: text("r2_key"),
     mimeType: text("mime_type"),
     errorMessage: text("error_message"),

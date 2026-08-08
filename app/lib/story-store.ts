@@ -44,6 +44,7 @@ export function storyPayload(story: StoredStory, storedClips: StoredClip[]) {
       return {
         slot,
         status: clip?.status ?? "starting",
+        extensionCount: clip?.extensionCount ?? 0,
         error: clip?.errorMessage ?? null,
         mediaUrl: clip?.status === "ready" ? `/api/stories/${story.id}/clips/${slot}` : null,
       };

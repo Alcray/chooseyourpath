@@ -15,12 +15,18 @@ export type StoryChoice = {
   explanation: string;
 };
 
+export type StoryClipExtension = {
+  prompt: string;
+  caption: string;
+};
+
 export type StoryClip = {
   id: ClipId;
   title: string;
   summary: string;
   caption: string;
   prompt: string;
+  extensions: StoryClipExtension[];
 };
 
 export type StoryPlan = {
@@ -113,4 +119,12 @@ export function getAgeBand(id: string) {
 
 export function isClipId(value: unknown): value is ClipId {
   return typeof value === "string" && CLIP_IDS.includes(value as ClipId);
+}
+
+export function isExtendedClip(id: ClipId) {
+  return id === "positive" || id === "negative";
+}
+
+export function baseClipDuration(id: ClipId): 6 | 8 {
+  return isExtendedClip(id) ? 6 : 8;
 }

@@ -8,6 +8,7 @@ import {
   CLIP_IDS,
   LANGUAGES,
   SETTINGS,
+  baseClipDuration,
   type StoryBrief,
   type StoryPlan,
 } from "../../lib/story";
@@ -141,12 +142,26 @@ function validateStoredPlan(value: unknown): StoryPlan {
     continuitySeed: plan.continuitySeed as number,
     clips: CLIP_IDS.map((id) => {
       const clip = byId.get(id)!;
+      const expectedExtensionCount = id === "positive" || id === "negative" ? 2 : 0;
+      if (!Array.isArray(clip.extensions) || clip.extensions.length !== expectedExtensionCount) {
+        throw new GoogleApiError(`The ${id} clip has an invalid extension plan.`, 422);
+      }
       return {
         id,
         title: boundedString(clip.title, `${id} clip title`, 1, 100),
         summary: boundedString(clip.summary, `${id} clip summary`, 1, 500),
-        prompt: boundedString(clip.prompt, `${id} clip prompt`, 80, 6000),
-        caption: boundedString(clip.caption, `${id} clip caption`, 1, 1200),
+        prompt: boundedString(clip.prompt, `${id} clip prompt`, 500, 1800),
+        caption: boundedString(clip.caption, `${id} clip caption`, 1, 350),
+        extensions: clip.extensions.map((extension, index) => {
+          if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
+            throw new GoogleApiError(`The ${id} extension ${index + 1} is invalid.`, 422);
+          }
+          const beat = extension as Record<string, unknown>;
+          return {
+            prompt: boundedString(beat.prompt, `${id} extension ${index + 1} prompt`, 500, 1800),
+            caption: boundedString(beat.caption, `${id} extension ${index + 1} caption`, 1, 350),
+          };
+        }),
       };
     }),
   };
@@ -249,8 +264,8 @@ export async function POST(request: Request) {
       ...CLIP_IDS.map((slot, index) =>
         d1
           .prepare(
-            `INSERT OR IGNORE INTO clips (id, story_id, slot, status, created_at, updated_at)
-             SELECT ?, ?, ?, ?, ?, ?
+            `INSERT OR IGNORE INTO clips (id, story_id, slot, status, extension_count, created_at, updated_at)
+             SELECT ?, ?, ?, ?, ?, ?, ?
              WHERE EXISTS (
                SELECT 1 FROM stories WHERE id = ? AND owner_user_id = ? AND idempotency_key = ?
              )`,
@@ -260,6 +275,7 @@ export async function POST(request: Request) {
             storyId,
             slot,
             "starting",
+            0,
             now + index,
             now + index,
             storyId,
@@ -285,7 +301,7 @@ export async function POST(request: Request) {
     const starts = await Promise.allSettled(
       plan.clips.map(async (clip) => ({
         slot: clip.id,
-        operationName: await startVeoClip(clip.prompt, plan.continuitySeed),
+        operationName: await startVeoClip(clip.prompt, plan.continuitySeed, baseClipDuration(clip.id)),
       })),
     );
 
@@ -310,7 +326,9 @@ export async function POST(request: Request) {
 
     const storedClips = await getStoryClips(storyId);
     const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
-    const activeCount = storedClips.filter((clip) => clip.status === "starting" || clip.status === "rendering" || clip.status === "ingesting").length;
+    const activeCount = storedClips.filter((clip) =>
+      clip.status === "starting" || clip.status === "rendering" || clip.status === "extension_retry" || clip.status === "extending" || clip.status === "ingesting"
+    ).length;
     const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
     const status = readyCount === CLIP_IDS.length
       ? "ready"
