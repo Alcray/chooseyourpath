@@ -58,7 +58,6 @@ export async function startVeoExtension(video: VeoVideo, prompt: string) {
         },
       ],
       parameters: {
-        task: "extend",
         sampleCount: 1,
         resolution: "720p",
         generateAudio: true,

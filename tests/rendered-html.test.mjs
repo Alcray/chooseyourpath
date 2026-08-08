@@ -34,6 +34,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   const [
     studio,
     plannerRoute,
+    plannerConfig,
     storyRoute,
     statusRoute,
     retryRoute,
@@ -45,6 +46,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   ] = await Promise.all([
     readFile(new URL("../app/studio.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/planner-config.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/retry/route.ts", import.meta.url), "utf8"),
@@ -82,14 +84,15 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /warmingClipsRef/);
   assert.match(studio, /!seamlessTransition/);
   assert.match(studio, /clipDurationLabel\(plan, "positive"\)/);
-  assert.match(plannerRoute, /gemini-3\.5-flash-lite:generateContent/);
+  assert.match(plannerConfig, /gemini-3\.5-flash-lite/);
   assert.match(plannerRoute, /googleJson<GeminiResponse>/);
-  assert.match(plannerRoute, /responseMimeType: "application\/json"/);
-  assert.match(plannerRoute, /responseSchema/);
-  assert.match(plannerRoute, /maxOutputTokens: 16384/);
+  assert.match(plannerConfig, /responseMimeType: "application\/json"/);
+  assert.match(plannerConfig, /responseJsonSchema: plannerResponseJsonSchema/);
+  assert.doesNotMatch(plannerConfig, /responseSchema:/);
+  assert.match(plannerConfig, /maxOutputTokens: 16384/);
   assert.match(plannerRoute, /AbortSignal\.timeout\(45_000\)/);
-  assert.doesNotMatch(plannerRoute, /temperature:|thinkingBudget|JSON\.stringify\(responseSchema\)/);
-  assert.match(plannerRoute, /minLength: 500, maxLength: 1800/);
+  assert.doesNotMatch(plannerConfig, /temperature:|thinkingBudget|minLength|maxLength/);
+  assert.match(plannerConfig, /additionalProperties: false/);
   assert.match(plannerRoute, /UNSAFE_STORY_PATTERN/);
   assert.match(plannerRoute, /assertChildSafeText\(JSON\.stringify\(validated\), "plan"\)/);
   assert.match(plannerRoute, /candidate\.finishReason === "MAX_TOKENS"/);
@@ -106,7 +109,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(statusRoute, /getMediaBucket\(\)\.put/);
   assert.match(statusRoute, /provider_job_id = \? AND extension_count = \? AND updated_at = \?/);
   assert.match(veo, /durationSeconds: 6 \| 8 = 8/);
-  assert.match(veo, /task: "extend"/);
+  assert.doesNotMatch(veo, /task: "extend"/);
   assert.match(veo, /video: \{[\s\S]*bytesBase64Encoded: video\.base64/);
   assert.match(storyStore, /extensionCount: clip\?\.extensionCount \?\? 0/);
   assert.match(schema, /extensionCount: integer\("extension_count"\)\.notNull\(\)\.default\(0\)/);
