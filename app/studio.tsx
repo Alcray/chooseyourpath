@@ -82,6 +82,7 @@ const emptyJobs = (): JobMap => ({
 });
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const currentTimestamp = () => Date.now();
 
 function formatElapsed(seconds: number) {
   if (seconds < 60) return "less than 1 min";
@@ -127,9 +128,24 @@ export function StoryStudio() {
   const [savedGeneration, setSavedGeneration] = useState<SavedGeneration | null>(null);
   const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [visibleClipId, setVisibleClipId] = useState<ClipId>("opening");
+  const [bufferedClips, setBufferedClips] = useState<ClipId[]>([]);
+  const [pendingClipId, setPendingClipId] = useState<ClipId | null>(null);
+  const [playbackStarted, setPlaybackStarted] = useState(false);
+  const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
+  const [allowEarlyPlayback, setAllowEarlyPlayback] = useState(false);
+  const [mediaErrors, setMediaErrors] = useState<Partial<Record<ClipId, string>>>({});
 
   const pollingRef = useRef(false);
   const pollingVersionRef = useRef(0);
+  const videoRefs = useRef<Partial<Record<ClipId, HTMLVideoElement | null>>>({});
+  const visibleClipRef = useRef<ClipId>("opening");
+  const pendingTransitionRef = useRef<ClipId | null>(null);
+  const transitionAttemptRef = useRef(0);
+  const transitionWatchdogRef = useRef<number | null>(null);
+  const firstChoiceRef = useRef<HTMLButtonElement | null>(null);
+  const completionActionRef = useRef<HTMLButtonElement | null>(null);
+  const recoveryActionRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +194,18 @@ export function StoryStudio() {
     return () => window.clearInterval(timer);
   }, [generationStartedAt, stage]);
 
+  useEffect(() => {
+    if (stage !== "player") return;
+    const timer = window.setTimeout(() => setAllowEarlyPlayback(true), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [stage]);
+
+  useEffect(() => {
+    if (playbackNeedsGesture) recoveryActionRef.current?.focus();
+    else if (playback === "choice") firstChoiceRef.current?.focus();
+    else if (playback === "complete") completionActionRef.current?.focus();
+  }, [playback, playbackNeedsGesture]);
+
   const currentStep = { brief: 1, blueprint: 2, generating: 3, player: 4 }[stage];
   const selectedPair = getCharacterPair(brief.characterPairId);
   const selectedSetting = getSetting(brief.settingId);
@@ -194,21 +222,189 @@ export function StoryStudio() {
         : activeCount > 0 && elapsedSeconds >= 60
           ? "Video rendering is usually the longest step. Each clip finishes independently."
           : "Starting and checking all four video jobs.";
-  const activeClipId: ClipId =
-    playback === "positive" || playback === "negative" || playback === "ending"
-      ? playback
-      : playback === "opening" || playback === "choice"
-        ? "opening"
-        : "ending";
-  const activeVideoUrl = videoUrls[activeClipId];
+  const playbackBufferReady = bufferedClips.length === CLIP_IDS.length;
+  const playbackStartAvailable = playbackBufferReady || allowEarlyPlayback;
+  const failedMediaClip = CLIP_IDS.find((clipId) => mediaErrors[clipId]);
+  const preStartTransitionPaused = !playbackStarted && pendingClipId !== null && playbackNeedsGesture;
 
   const clipById = useMemo(() => {
     return new Map((plan?.clips ?? []).map((clip) => [clip.id, clip]));
   }, [plan]);
-  const activeCaption = clipById.get(activeClipId)?.caption ?? clipById.get(activeClipId)?.summary ?? "Story narration";
-  const activeCaptionUrl = `data:text/vtt;charset=utf-8,${encodeURIComponent(
-    `WEBVTT\n\n00:00:00.000 --> 00:00:08.000\n${activeCaption.replace(/-->/g, "→")}`,
-  )}`;
+
+  function captionUrlFor(clipId: ClipId) {
+    const caption = clipById.get(clipId)?.caption ?? clipById.get(clipId)?.summary ?? "Story narration";
+    return `data:text/vtt;charset=utf-8,${encodeURIComponent(
+      `WEBVTT\n\n00:00:00.000 --> 00:00:08.000\n${caption.replace(/-->/g, "→")}`,
+    )}`;
+  }
+
+  function markClipBuffered(clipId: ClipId) {
+    setBufferedClips((current) => current.includes(clipId) ? current : [...current, clipId]);
+  }
+
+  function updateClipBuffer(clipId: ClipId) {
+    const video = videoRefs.current[clipId];
+    if (!video || !Number.isFinite(video.duration) || video.duration <= 0 || video.buffered.length === 0) return;
+    const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+    if (bufferedEnd >= video.duration - 0.25) markClipBuffered(clipId);
+  }
+
+  function clearTransitionWatchdog() {
+    if (transitionWatchdogRef.current === null) return;
+    window.clearTimeout(transitionWatchdogRef.current);
+    transitionWatchdogRef.current = null;
+  }
+
+  function handleMediaError(clipId: ClipId) {
+    videoRefs.current[clipId]?.pause();
+    setBufferedClips((current) => current.filter((id) => id !== clipId));
+    setMediaErrors((current) => ({ ...current, [clipId]: "This scene could not be preloaded." }));
+    if (pendingTransitionRef.current === clipId || (playbackStarted && visibleClipRef.current === clipId)) {
+      pendingTransitionRef.current = clipId;
+      setPendingClipId(clipId);
+      clearTransitionWatchdog();
+      setPlaybackNeedsGesture(true);
+    }
+  }
+
+  function retryMediaClip(clipId: ClipId) {
+    const video = videoRefs.current[clipId];
+    if (!video) return;
+    setMediaErrors((current) => {
+      const next = { ...current };
+      delete next[clipId];
+      return next;
+    });
+    video.load();
+  }
+
+  function retryFailedMedia(clipId: ClipId) {
+    retryMediaClip(clipId);
+    if (pendingTransitionRef.current === clipId) playClip(clipId, true);
+  }
+
+  function resetPlaybackState() {
+    for (const video of Object.values(videoRefs.current)) {
+      if (!video) continue;
+      video.pause();
+      try {
+        video.currentTime = 0;
+      } catch {
+        // A video without metadata will already begin at zero once it loads.
+      }
+    }
+    pendingTransitionRef.current = null;
+    transitionAttemptRef.current += 1;
+    clearTransitionWatchdog();
+    visibleClipRef.current = "opening";
+    setVisibleClipId("opening");
+    setBufferedClips([]);
+    setPendingClipId(null);
+    setPlaybackStarted(false);
+    setPlaybackNeedsGesture(false);
+    setAllowEarlyPlayback(false);
+    setMediaErrors({});
+    setPlayback("opening");
+    setChosenPath(null);
+  }
+
+  function playClip(clipId: ClipId, retry = false) {
+    const video = videoRefs.current[clipId];
+    if (!video) return;
+
+    const previousPendingClip = pendingTransitionRef.current;
+    if (previousPendingClip && !retry) return;
+    if (previousPendingClip && previousPendingClip !== clipId) {
+      videoRefs.current[previousPendingClip]?.pause();
+    }
+    clearTransitionWatchdog();
+    const transitionAttempt = ++transitionAttemptRef.current;
+    pendingTransitionRef.current = clipId;
+    setPendingClipId(clipId);
+    setPlaybackNeedsGesture(false);
+    video.pause();
+    try {
+      video.currentTime = 0;
+    } catch {
+      // play() will wait for metadata if this clip is still finishing its preload.
+    }
+
+    try {
+      void video.play().catch(() => {
+        if (transitionAttemptRef.current === transitionAttempt && pendingTransitionRef.current === clipId) {
+          setPlaybackNeedsGesture(true);
+        }
+      });
+    } catch {
+      setPlaybackNeedsGesture(true);
+    }
+
+    transitionWatchdogRef.current = window.setTimeout(() => {
+      if (transitionAttemptRef.current === transitionAttempt && pendingTransitionRef.current === clipId) {
+        setPlaybackNeedsGesture(true);
+      }
+    }, 8_000);
+  }
+
+  function handleClipPlaying(clipId: ClipId) {
+    if (pendingTransitionRef.current !== clipId) {
+      videoRefs.current[clipId]?.pause();
+      return;
+    }
+
+    const previousClipId = visibleClipRef.current;
+    transitionAttemptRef.current += 1;
+    clearTransitionWatchdog();
+    pendingTransitionRef.current = null;
+    visibleClipRef.current = clipId;
+    setVisibleClipId(clipId);
+    setPendingClipId(null);
+    setPlaybackNeedsGesture(false);
+    setPlaybackStarted(true);
+    setPlayback(clipId);
+
+    if (previousClipId !== clipId) videoRefs.current[previousClipId]?.pause();
+  }
+
+  function handleClipEnded(clipId: ClipId) {
+    if (visibleClipRef.current !== clipId) return;
+    if (clipId === "opening") setPlayback("choice");
+    else if (clipId === "positive" || clipId === "negative") playClip("ending");
+    else setPlayback("complete");
+  }
+
+  function startPlayback() {
+    if (!playbackStartAvailable) return;
+    playClip("opening");
+  }
+
+  function continuePlayback() {
+    const target = pendingTransitionRef.current ?? pendingClipId;
+    if (!target) return;
+    if (mediaErrors[target]) retryMediaClip(target);
+    playClip(target, true);
+  }
+
+  function restartPlayback() {
+    for (const video of Object.values(videoRefs.current)) {
+      if (!video) continue;
+      video.pause();
+      try {
+        video.currentTime = 0;
+      } catch {
+        // The already-buffered video will restart as soon as it can play.
+      }
+    }
+    pendingTransitionRef.current = null;
+    clearTransitionWatchdog();
+    visibleClipRef.current = "opening";
+    setVisibleClipId("opening");
+    setPendingClipId(null);
+    setPlaybackNeedsGesture(false);
+    setPlayback("opening");
+    setChosenPath(null);
+    playClip("opening");
+  }
 
   function updateBrief<K extends keyof StoryBrief>(key: K, value: StoryBrief[K]) {
     setBrief((current) => ({ ...current, [key]: value }));
@@ -281,15 +477,29 @@ export function StoryStudio() {
     setStage("generating");
     setIsGenerating(true);
     setGenerationStartedAt(startedAt);
-    setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    setElapsedSeconds(Math.max(0, Math.floor((currentTimestamp() - startedAt) / 1000)));
     persistGeneration(storyId, planValue, briefValue, startedAt);
+
+    let previousReady = 0;
+    let consecutiveRefreshErrors = 0;
 
     try {
       for (let attempt = 0; attempt < 300; attempt += 1) {
-        const response = await fetch(`/api/stories/${storyId}`, { cache: "no-store" });
-        if (pollingVersionRef.current !== pollingVersion) return;
-        const payload = (await response.json()) as { story?: ServerStory; error?: string };
-        if (!response.ok || !payload.story) throw new Error(payload.error ?? "Story status is unavailable.");
+        let payload: { story?: ServerStory; error?: string };
+        try {
+          const response = await fetch(`/api/stories/${storyId}`, { cache: "no-store" });
+          if (pollingVersionRef.current !== pollingVersion) return;
+          payload = (await response.json()) as { story?: ServerStory; error?: string };
+          if (!response.ok || !payload.story) throw new Error(payload.error ?? "Story status is unavailable.");
+          consecutiveRefreshErrors = 0;
+          setError("");
+        } catch (refreshError) {
+          consecutiveRefreshErrors += 1;
+          if (consecutiveRefreshErrors >= 5) throw refreshError;
+          setError("The status connection paused briefly. Retrying automatically…");
+          await wait(Math.min(5_000, 1_500 * consecutiveRefreshErrors));
+          continue;
+        }
 
         applyServerStory(payload.story);
         const ready = payload.story.clips.filter((clip) => clip.status === "ready").length;
@@ -299,8 +509,7 @@ export function StoryStudio() {
         if (ready === 4) {
           localStorage.removeItem(GENERATION_STORAGE_KEY);
           setSavedGeneration(null);
-          setPlayback("opening");
-          setChosenPath(null);
+          resetPlaybackState();
           setStage("player");
           return;
         }
@@ -308,7 +517,9 @@ export function StoryStudio() {
           setError(`${failed} clip${failed === 1 ? "" : "s"} need another try. Finished clips are safely stored.`);
           return;
         }
-        await wait(6_000);
+        const nextDelay = ready > previousReady ? 750 : 3_000;
+        previousReady = ready;
+        await wait(nextDelay);
         if (pollingVersionRef.current !== pollingVersion) return;
       }
       setError("Generation is still running. You can leave and resume this story later.");
@@ -323,7 +534,7 @@ export function StoryStudio() {
   }
 
   async function startGeneration(planValue: StoryPlan, briefValue: StoryBrief, approvedBlueprintId: string) {
-    const requestedAt = Date.now();
+    const requestedAt = currentTimestamp();
     setError("");
     setStage("generating");
     setIsGenerating(true);
@@ -382,6 +593,7 @@ export function StoryStudio() {
   function resetStudio() {
     pollingVersionRef.current += 1;
     pollingRef.current = false;
+    resetPlaybackState();
     setVideoUrls({});
     localStorage.removeItem(GENERATION_STORAGE_KEY);
     localStorage.removeItem(PENDING_START_STORAGE_KEY);
@@ -397,14 +609,9 @@ export function StoryStudio() {
   }
 
   function chooseBranch(path: "positive" | "negative") {
+    if (pendingTransitionRef.current) return;
     setChosenPath(path);
-    setPlayback(path);
-  }
-
-  function handleVideoEnded() {
-    if (playback === "opening") setPlayback("choice");
-    else if (playback === "positive" || playback === "negative") setPlayback("ending");
-    else if (playback === "ending") setPlayback("complete");
+    playClip(path);
   }
 
   return (
@@ -632,37 +839,88 @@ export function StoryStudio() {
 
             <div className="player-layout">
               <div className="video-player-shell">
-                <div className="now-playing"><span>Now playing</span><strong>{CLIP_META[activeClipId].number} · {clipById.get(activeClipId)?.title}</strong></div>
-                {activeVideoUrl && (
-                  <video
-                    key={activeClipId}
-                    src={activeVideoUrl}
-                    autoPlay={playback !== "choice" && playback !== "complete"}
-                    controls={playback !== "choice" && playback !== "complete"}
-                    playsInline
-                    onEnded={handleVideoEnded}
-                  >
-                    <track
-                      default
-                      kind="captions"
-                      src={activeCaptionUrl}
-                      srcLang={brief.language === "Armenian" ? "hy" : "en"}
-                      label={brief.language === "Armenian" ? "Հայերեն" : "English"}
-                    />
-                  </video>
+                {playbackStarted && pendingClipId === null && playback !== "choice" && playback !== "complete" && (
+                  <div className="now-playing"><span>Now playing</span><strong>{CLIP_META[visibleClipId].number} · {clipById.get(visibleClipId)?.title}</strong></div>
+                )}
+                {CLIP_IDS.map((clipId) => {
+                  const controlsActive =
+                    visibleClipId === clipId &&
+                    playbackStarted &&
+                    pendingClipId === null &&
+                    playback !== "choice" &&
+                    playback !== "complete";
+                  return videoUrls[clipId] ? (
+                    <video
+                      className={`story-clip-video ${visibleClipId === clipId ? "visible" : ""}`}
+                      key={clipId}
+                      ref={(element) => { videoRefs.current[clipId] = element; }}
+                      src={videoUrls[clipId]}
+                      preload="auto"
+                      controls={controlsActive}
+                      playsInline
+                      aria-hidden={!controlsActive}
+                      tabIndex={controlsActive ? 0 : -1}
+                      onLoadedMetadata={() => updateClipBuffer(clipId)}
+                      onProgress={() => updateClipBuffer(clipId)}
+                      onCanPlay={() => updateClipBuffer(clipId)}
+                      onCanPlayThrough={() => markClipBuffered(clipId)}
+                      onError={() => handleMediaError(clipId)}
+                      onPlaying={() => handleClipPlaying(clipId)}
+                      onEnded={() => handleClipEnded(clipId)}
+                    >
+                      <track
+                        default
+                        kind="captions"
+                        src={captionUrlFor(clipId)}
+                        srcLang={brief.language === "Armenian" ? "hy" : "en"}
+                        label={brief.language === "Armenian" ? "Հայերեն" : "English"}
+                      />
+                    </video>
+                  ) : null;
+                })}
+                {!playbackStarted && (
+                  <div className="playback-preparing" aria-live="polite">
+                    <span>{preStartTransitionPaused ? "OPENING PAUSED WHILE PREPARING" : failedMediaClip ? "ONE SCENE NEEDS TO RECONNECT" : playbackBufferReady ? "ALL PATHS PREPARED" : "PREPARING ALL FOUR CLIPS"}</span>
+                    <h2>{preStartTransitionPaused ? "Tap to reconnect and begin the story." : failedMediaClip ? "Let’s reconnect the missing scene." : playbackBufferReady ? "Your story is ready to begin." : `Preparing scenes ${bufferedClips.length} of ${CLIP_IDS.length}…`}</h2>
+                    <div
+                      className="prebuffer-progress"
+                      role="progressbar"
+                      aria-label="Video preload progress"
+                      aria-valuemin={0}
+                      aria-valuemax={CLIP_IDS.length}
+                      aria-valuenow={bufferedClips.length}
+                    >
+                      <i style={{ width: `${(bufferedClips.length / CLIP_IDS.length) * 100}%` }} />
+                    </div>
+                    <p>We’re preparing every path now so your child’s choice can continue smoothly.</p>
+                    {preStartTransitionPaused && <button ref={recoveryActionRef} type="button" onClick={continuePlayback}>Reconnect and start ↻</button>}
+                    {!preStartTransitionPaused && failedMediaClip && <button type="button" onClick={() => retryFailedMedia(failedMediaClip)}>Retry scene ↻</button>}
+                    {!preStartTransitionPaused && !failedMediaClip && playbackStartAvailable && <button type="button" onClick={startPlayback}>Start story ▶</button>}
+                    {!preStartTransitionPaused && !failedMediaClip && !playbackBufferReady && playbackStartAvailable && <small>The other paths will keep preparing while the beginning plays.</small>}
+                  </div>
+                )}
+                {playbackStarted && playbackNeedsGesture && (
+                  <div className="playback-preparing compact" aria-live="polite">
+                    <span>SCENE PAUSED WHILE PREPARING</span>
+                    <h2>Tap to reconnect and continue the story.</h2>
+                    <button ref={recoveryActionRef} type="button" onClick={continuePlayback}>{pendingClipId && mediaErrors[pendingClipId] ? "Retry and continue ↻" : "Continue story ▶"}</button>
+                  </div>
+                )}
+                {playbackStarted && pendingClipId && !playbackNeedsGesture && (
+                  <div className="scene-transition-status" role="status">Joining the next scene…</div>
                 )}
                 {playback === "choice" && (
-                  <div className="decision-overlay">
+                  <div className="decision-overlay" role="dialog" aria-labelledby="story-choice-title">
                     <span>YOUR CHOICE</span>
-                    <h2>{plan.choiceQuestion}</h2>
+                    <h2 id="story-choice-title">{plan.choiceQuestion}</h2>
                     <div>
-                      <button type="button" onClick={() => chooseBranch("positive")}><i>♥</i><strong>{plan.positiveChoice.label}</strong></button>
-                      <button type="button" onClick={() => chooseBranch("negative")}><i>?</i><strong>{plan.negativeChoice.label}</strong></button>
+                      <button ref={firstChoiceRef} type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("positive")}><i>♥</i><strong>{plan.positiveChoice.label}</strong></button>
+                      <button type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("negative")}><i>?</i><strong>{plan.negativeChoice.label}</strong></button>
                     </div>
                   </div>
                 )}
                 {playback === "complete" && (
-                  <div className="completion-overlay"><span>✓</span><h2>Story complete</h2><p>The choice changed the middle. The lesson still reached a warm ending.</p><button type="button" onClick={() => { setPlayback("opening"); setChosenPath(null); }}>Try the other path ↻</button></div>
+                  <div className="completion-overlay" role="dialog" aria-labelledby="story-complete-title"><span>✓</span><h2 id="story-complete-title">Story complete</h2><p>The choice changed the middle. The lesson still reached a warm ending.</p><button ref={completionActionRef} type="button" onClick={restartPlayback}>Try the other path ↻</button></div>
                 )}
               </div>
 
@@ -671,8 +929,8 @@ export function StoryStudio() {
                 <div className="route-map">
                   <div className={`route-node opening ${playback === "opening" || playback === "choice" ? "active" : "done"}`}><span>01</span><p><strong>Beginning</strong><small>Ends at the choice</small></p></div>
                   <div className="route-split" />
-                  <div className={`route-node positive ${chosenPath === "positive" ? "active" : ""}`}><span>02</span><p><strong>Caring path</strong><small>{plan.positiveChoice.label}</small></p></div>
-                  <div className={`route-node negative ${chosenPath === "negative" ? "active" : ""}`}><span>03</span><p><strong>Learning path</strong><small>{plan.negativeChoice.label}</small></p></div>
+                  <div className={`route-node positive ${chosenPath === "positive" ? playback === "ending" || playback === "complete" ? "done" : playback === "positive" || pendingClipId === "positive" ? "active" : "" : ""}`}><span>02</span><p><strong>Caring path</strong><small>{plan.positiveChoice.label}</small></p></div>
+                  <div className={`route-node negative ${chosenPath === "negative" ? playback === "ending" || playback === "complete" ? "done" : playback === "negative" || pendingClipId === "negative" ? "active" : "" : ""}`}><span>03</span><p><strong>Learning path</strong><small>{plan.negativeChoice.label}</small></p></div>
                   <div className="route-join" />
                   <div className={`route-node ending ${playback === "ending" ? "active" : playback === "complete" ? "done" : ""}`}><span>04</span><p><strong>Shared ending</strong><small>Always plays last</small></p></div>
                 </div>

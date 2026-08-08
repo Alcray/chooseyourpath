@@ -1,8 +1,8 @@
 import { and, asc, eq, inArray, lt, or } from "drizzle-orm";
 import { getDb, getRawDb } from "../../../../db";
 import { clips, stories } from "../../../../db/schema";
-import { apiErrorResponse, getMediaBucket } from "../../../lib/google";
-import { isClipId, type StoryPlan } from "../../../lib/story";
+import { apiErrorResponse, getMediaBucket, GoogleApiError } from "../../../lib/google";
+import { CLIP_IDS, isClipId, type StoryPlan } from "../../../lib/story";
 import { clipPrompt, getOwnedStory, getStoryClips, requestOwnerId, storyPayload } from "../../../lib/story-store";
 import { decodeBase64Video, pollVeoClip, startVeoClip } from "../../../lib/veo";
 
@@ -16,6 +16,9 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     if (!story) return Response.json({ error: "Story not found." }, { status: 404 });
 
     const db = getDb();
+    const d1 = getRawDb();
+    const staleStartBefore = Date.now() - 2 * 60 * 1000;
+    const stalePollBefore = Date.now() - 10 * 1000;
     const staleIngestionBefore = Date.now() - 2 * 60 * 1000;
     const [nextClip] = await db
       .select()
@@ -23,8 +26,10 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
       .where(
         and(
           eq(clips.storyId, storyId),
+          inArray(clips.slot, [...CLIP_IDS]),
           or(
-            inArray(clips.status, ["starting", "rendering"]),
+            and(eq(clips.status, "starting"), lt(clips.updatedAt, staleStartBefore)),
+            and(eq(clips.status, "rendering"), lt(clips.updatedAt, stalePollBefore)),
             and(eq(clips.status, "ingesting"), lt(clips.updatedAt, staleIngestionBefore)),
           ),
         ),
@@ -34,25 +39,89 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
 
     if (nextClip && isClipId(nextClip.slot)) {
       if (!nextClip.providerJobId) {
-        const plan = JSON.parse(story.planJson) as StoryPlan;
-        try {
-          const operationName = await startVeoClip(clipPrompt(plan, nextClip.slot), plan.continuitySeed);
-          await db.update(clips).set({ status: "rendering", providerJobId: operationName, errorMessage: null, updatedAt: Date.now() }).where(eq(clips.id, nextClip.id));
-        } catch (startError) {
-          const message = startError instanceof Error ? startError.message : "Video generation could not start.";
-          await db.update(clips).set({ status: "failed", errorMessage: message.slice(0, 500), updatedAt: Date.now() }).where(eq(clips.id, nextClip.id));
+        const claimTime = Date.now();
+        const claim = await d1
+          .prepare(
+            "UPDATE clips SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
+          )
+          .bind("starting", claimTime, nextClip.id, nextClip.status, nextClip.updatedAt)
+          .run();
+
+        if (Number(claim.meta.changes ?? 0) === 1) {
+          const plan = JSON.parse(story.planJson) as StoryPlan;
+          try {
+            const operationName = await startVeoClip(clipPrompt(plan, nextClip.slot), plan.continuitySeed);
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, provider_job_id = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
+              )
+              .bind("rendering", operationName, Date.now(), nextClip.id, "starting", claimTime)
+              .run();
+          } catch (startError) {
+            const message = startError instanceof Error ? startError.message : "Video generation could not start.";
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
+              )
+              .bind("failed", message.slice(0, 500), Date.now(), nextClip.id, "starting", claimTime)
+              .run();
+          }
         }
       } else {
-        const result = await pollVeoClip(nextClip.providerJobId);
-        if (!result.done) {
-          await db.update(clips).set({ status: "rendering", updatedAt: Date.now() }).where(eq(clips.id, nextClip.id));
-        } else if (result.video) {
+        const pollClaimTime = Date.now();
+        const pollClaim = await d1
+          .prepare(
+            "UPDATE clips SET updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+          )
+          .bind(pollClaimTime, nextClip.id, nextClip.status, nextClip.providerJobId, nextClip.updatedAt)
+          .run();
+
+        if (Number(pollClaim.meta.changes ?? 0) === 1) {
+          let result: Awaited<ReturnType<typeof pollVeoClip>>;
+          let transientMessage: string | null = null;
+          try {
+            result = await pollVeoClip(nextClip.providerJobId);
+          } catch (pollError) {
+            const retryable =
+              pollError instanceof TypeError ||
+              (pollError instanceof GoogleApiError && pollError.retryable);
+            if (retryable) {
+              transientMessage = "Video status is temporarily unavailable. Retrying automatically.";
+              result = { done: false };
+            } else {
+              const message = pollError instanceof Error ? pollError.message : "Video status could not be checked.";
+              result = { done: true, error: message };
+            }
+          }
+          if (!result.done) {
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+              )
+              .bind(
+                "rendering",
+                transientMessage,
+                Date.now(),
+                nextClip.id,
+                nextClip.status,
+                nextClip.providerJobId,
+                pollClaimTime,
+              )
+              .run();
+          } else if (result.video) {
           const claimTime = Date.now();
-          const claim = await getRawDb()
+          const claim = await d1
             .prepare(
-              "UPDATE clips SET status = ?, updated_at = ? WHERE id = ? AND (status = ? OR (status = ? AND updated_at = ?))",
+              "UPDATE clips SET status = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
             )
-            .bind("ingesting", claimTime, nextClip.id, "rendering", "ingesting", nextClip.updatedAt)
+            .bind(
+              "ingesting",
+              claimTime,
+              nextClip.id,
+              nextClip.status,
+              nextClip.providerJobId,
+              pollClaimTime,
+            )
             .run();
           if ((claim.meta.changes ?? 0) === 0) {
             return Response.json(
@@ -61,12 +130,82 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
             );
           }
           const r2Key = `stories/${storyId}/${nextClip.slot}.mp4`;
-          await getMediaBucket().put(r2Key, decodeBase64Video(result.video.base64), {
-            httpMetadata: { contentType: result.video.mimeType, contentDisposition: "inline" },
-          });
-          await db.update(clips).set({ status: "ready", r2Key, mimeType: result.video.mimeType, errorMessage: null, updatedAt: Date.now() }).where(eq(clips.id, nextClip.id));
-        } else {
-          await db.update(clips).set({ status: "failed", errorMessage: (result.error ?? "Video generation failed.").slice(0, 500), updatedAt: Date.now() }).where(eq(clips.id, nextClip.id));
+          let videoBytes: Uint8Array | null = null;
+          try {
+            videoBytes = decodeBase64Video(result.video.base64);
+          } catch {
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+              )
+              .bind(
+                "failed",
+                "The generated clip could not be decoded. Please retry it.",
+                Date.now(),
+                nextClip.id,
+                "ingesting",
+                nextClip.providerJobId,
+                claimTime,
+              )
+              .run();
+          }
+
+          if (videoBytes) {
+            try {
+              await getMediaBucket().put(r2Key, videoBytes, {
+                httpMetadata: { contentType: result.video.mimeType, contentDisposition: "inline" },
+              });
+              await d1
+                .prepare(
+                  "UPDATE clips SET status = ?, r2_key = ?, mime_type = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+                )
+                .bind(
+                  "ready",
+                  r2Key,
+                  result.video.mimeType,
+                  Date.now(),
+                  nextClip.id,
+                  "ingesting",
+                  nextClip.providerJobId,
+                  claimTime,
+                )
+                .run();
+            } catch (storageError) {
+              const retryableStorage = !(storageError instanceof GoogleApiError) || storageError.retryable;
+              await d1
+                .prepare(
+                  "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+                )
+                .bind(
+                  retryableStorage ? "rendering" : "failed",
+                  retryableStorage
+                    ? "The clip finished, but secure saving was interrupted. Retrying automatically."
+                    : "Generated-media storage is unavailable. Please retry after it is configured.",
+                  Date.now(),
+                  nextClip.id,
+                  "ingesting",
+                  nextClip.providerJobId,
+                  claimTime,
+                )
+                .run();
+            }
+          }
+          } else {
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND updated_at = ?",
+              )
+              .bind(
+                "failed",
+                (result.error ?? "Video generation failed.").slice(0, 500),
+                Date.now(),
+                nextClip.id,
+                nextClip.status,
+                nextClip.providerJobId,
+                pollClaimTime,
+              )
+              .run();
+          }
         }
       }
     }
@@ -75,7 +214,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
     const activeCount = storedClips.filter((clip) => clip.status === "starting" || clip.status === "rendering" || clip.status === "ingesting").length;
     const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
-    const status = readyCount === 4 ? "ready" : activeCount > 0 ? "rendering" : failedCount > 0 ? "partial" : "starting";
+    const status = readyCount === CLIP_IDS.length ? "ready" : activeCount > 0 ? "rendering" : failedCount > 0 ? "partial" : "starting";
     await db.update(stories).set({ status, updatedAt: Date.now() }).where(eq(stories.id, storyId));
     const refreshedStory = { ...story, status, updatedAt: Date.now() };
 

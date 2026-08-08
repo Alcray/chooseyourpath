@@ -31,11 +31,12 @@ test("server-renders the KindPath parent studio", async () => {
 });
 
 test("keeps the four-clip workflow and hosted assets wired", async () => {
-  const [studio, plannerRoute, storyRoute, statusRoute, hosting] = await Promise.all([
+  const [studio, plannerRoute, storyRoute, statusRoute, retryRoute, hosting] = await Promise.all([
     readFile(new URL("../app/studio.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/stories/[storyId]/retry/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     access(new URL("../public/og.png", import.meta.url)),
     access(new URL("../public/favicon.png", import.meta.url)),
@@ -43,7 +44,14 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
 
   assert.match(studio, /chooseBranch\("positive"\)/);
   assert.match(studio, /chooseBranch\("negative"\)/);
-  assert.match(studio, /setPlayback\("ending"\)/);
+  assert.match(studio, /playClip\("ending"\)/);
+  assert.match(studio, /preload="auto"/);
+  assert.match(studio, /CLIP_IDS\.map\(\(clipId\)/);
+  assert.match(studio, /visibleClipId === clipId/);
+  assert.doesNotMatch(studio, /key=\{activeClipId\}/);
+  assert.match(studio, /onProgress=\{\(\) => updateClipBuffer\(clipId\)\}/);
+  assert.match(studio, /handleMediaError\(clipId\)/);
+  assert.match(studio, /transitionWatchdogRef/);
   assert.match(studio, /\/api\/stories\/\$\{storyId\}/);
   assert.match(studio, /className="progress-track"/);
   assert.match(studio, /aria-valuenow=\{readyCount\}/);
@@ -55,6 +63,9 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(storyRoute, /startVeoClip/);
   assert.match(statusRoute, /pollVeoClip/);
   assert.match(statusRoute, /getMediaBucket\(\)\.put/);
+  assert.match(statusRoute, /status = \? AND provider_job_id = \? AND updated_at = \?/);
+  assert.match(retryRoute, /\.bind\("starting", index, clip\.id, "failed"\)/);
+  assert.doesNotMatch(retryRoute, /startVeoClip/);
   assert.deepEqual(JSON.parse(hosting), {
     project_id: "appgprj_6a76f9dddcd08191b025b1859772fa43",
     d1: "DB",

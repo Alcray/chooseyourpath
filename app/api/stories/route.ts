@@ -291,25 +291,40 @@ export async function POST(request: Request) {
 
     const updates = starts.map((result, index) => {
       const slot = plan.clips[index].id;
+      const expectedUpdatedAt = now + index;
       if (result.status === "fulfilled") {
         return d1
-          .prepare("UPDATE clips SET status = ?, provider_job_id = ?, error_message = NULL, updated_at = ? WHERE story_id = ? AND slot = ?")
-          .bind("rendering", result.value.operationName, Date.now(), storyId, slot);
+          .prepare(
+            "UPDATE clips SET status = ?, provider_job_id = ?, error_message = NULL, updated_at = ? WHERE story_id = ? AND slot = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
+          )
+          .bind("rendering", result.value.operationName, Date.now(), storyId, slot, "starting", expectedUpdatedAt);
       }
       const message = result.reason instanceof Error ? result.reason.message : "Video generation could not start.";
       return d1
-        .prepare("UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE story_id = ? AND slot = ?")
-        .bind("failed", message.slice(0, 500), Date.now(), storyId, slot);
+        .prepare(
+          "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE story_id = ? AND slot = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
+        )
+        .bind("failed", message.slice(0, 500), Date.now(), storyId, slot, "starting", expectedUpdatedAt);
     });
     await d1.batch(updates);
 
-    const failedCount = starts.filter((result) => result.status === "rejected").length;
+    const storedClips = await getStoryClips(storyId);
+    const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
+    const activeCount = storedClips.filter((clip) => clip.status === "starting" || clip.status === "rendering" || clip.status === "ingesting").length;
+    const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
+    const status = readyCount === CLIP_IDS.length
+      ? "ready"
+      : activeCount > 0
+        ? "rendering"
+        : failedCount > 0
+          ? "failed"
+          : "starting";
     await db
       .update(stories)
-      .set({ status: failedCount === CLIP_IDS.length ? "failed" : "rendering", updatedAt: Date.now() })
+      .set({ status, updatedAt: Date.now() })
       .where(eq(stories.id, storyId));
     const [story] = await db.select().from(stories).where(eq(stories.id, storyId)).limit(1);
-    return Response.json({ story: storyPayload(story, await getStoryClips(storyId)) }, { status: 202 });
+    return Response.json({ story: storyPayload(story, storedClips) }, { status: 202 });
   } catch (error) {
     return apiErrorResponse(error);
   }

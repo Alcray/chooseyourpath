@@ -1,10 +1,9 @@
 import { and, eq } from "drizzle-orm";
-import { getDb } from "../../../../../db";
+import { getDb, getRawDb } from "../../../../../db";
 import { clips, stories } from "../../../../../db/schema";
 import { apiErrorResponse } from "../../../../lib/google";
-import { isClipId, type StoryPlan } from "../../../../lib/story";
-import { clipPrompt, getOwnedStory, requestOwnerId } from "../../../../lib/story-store";
-import { startVeoClip } from "../../../../lib/veo";
+import { CLIP_IDS, isClipId } from "../../../../lib/story";
+import { getOwnedStory, requestOwnerId } from "../../../../lib/story-store";
 
 export async function POST(request: Request, context: { params: Promise<{ storyId: string }> }) {
   try {
@@ -15,25 +14,29 @@ export async function POST(request: Request, context: { params: Promise<{ storyI
 
     const db = getDb();
     const failedClips = await db.select().from(clips).where(and(eq(clips.storyId, storyId), eq(clips.status, "failed")));
-    const plan = JSON.parse(story.planJson) as StoryPlan;
+    const validFailedClips = failedClips.filter((clip) => isClipId(clip.slot));
 
-    const results = await Promise.allSettled(
-      failedClips.filter((clip) => isClipId(clip.slot)).map(async (clip) => {
-        if (!isClipId(clip.slot)) throw new Error("Invalid clip role.");
-        return {
-          id: clip.id,
-          operationName: await startVeoClip(clipPrompt(plan, clip.slot), plan.continuitySeed),
-        };
-      }),
-    );
+    const d1 = getRawDb();
+    const claimResults = validFailedClips.length > 0
+      ? await d1.batch(
+          validFailedClips.map((clip, index) =>
+            d1
+              .prepare(
+                "UPDATE clips SET status = ?, provider_job_id = NULL, r2_key = NULL, mime_type = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND status = ?",
+              )
+              .bind("starting", index, clip.id, "failed"),
+          ),
+        )
+      : [];
+    const restartedCount = claimResults.filter((result) => Number(result.meta?.changes ?? 0) === 1).length;
 
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        await db.update(clips).set({ status: "rendering", providerJobId: result.value.operationName, errorMessage: null, updatedAt: Date.now() }).where(eq(clips.id, result.value.id));
-      }
-    }
-    await db.update(stories).set({ status: "rendering", updatedAt: Date.now() }).where(eq(stories.id, storyId));
-    return Response.json({ ok: true }, { status: 202 });
+    const storedClips = await db.select().from(clips).where(eq(clips.storyId, storyId));
+    const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
+    const activeCount = storedClips.filter((clip) => clip.status === "starting" || clip.status === "rendering" || clip.status === "ingesting").length;
+    const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
+    const status = readyCount === CLIP_IDS.length ? "ready" : activeCount > 0 ? "rendering" : failedCount > 0 ? "partial" : "starting";
+    await db.update(stories).set({ status, updatedAt: Date.now() }).where(eq(stories.id, storyId));
+    return Response.json({ ok: true, restartedCount }, { status: 202 });
   } catch (error) {
     return apiErrorResponse(error);
   }

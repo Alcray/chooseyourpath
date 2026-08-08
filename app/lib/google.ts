@@ -14,11 +14,13 @@ function generationEnv() {
 
 export class GoogleApiError extends Error {
   status: number;
+  retryable: boolean;
 
-  constructor(message: string, status = 500) {
+  constructor(message: string, status = 500, retryable = false) {
     super(message);
     this.name = "GoogleApiError";
     this.status = status;
+    this.retryable = retryable;
   }
 }
 
@@ -74,13 +76,14 @@ export async function googleJson<T>(
   try {
     payload = (await response.json()) as JsonRecord;
   } catch {
-    throw new GoogleApiError("The generation service returned an unreadable response.", 502);
+    throw new GoogleApiError("The generation service returned an unreadable response.", 502, true);
   }
 
   if (!response.ok) {
     const error = payload.error as JsonRecord | undefined;
     const message = typeof error?.message === "string" ? error.message : "Generation request failed.";
-    throw new GoogleApiError(message, response.status);
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+    throw new GoogleApiError(message, response.status, retryable);
   }
 
   return payload as T;
