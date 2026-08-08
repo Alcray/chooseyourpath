@@ -85,8 +85,10 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /!seamlessTransition/);
   assert.match(studio, /clipDurationLabel\(plan, "positive"\)/);
   assert.match(plannerRoute, /deepseek\/deepseek-v4-pro/);
-  assert.match(plannerRoute, /type: "json_schema"/);
-  assert.match(plannerRoute, /strict: true/);
+  assert.match(plannerRoute, /OUTPUT JSON SHAPE/);
+  assert.match(plannerRoute, /\$\{JSON\.stringify\(responseSchema\)\}/);
+  assert.match(plannerRoute, /response_format: \{ type: "json_object" \}/);
+  assert.doesNotMatch(plannerRoute, /type: "json_schema"/);
   assert.match(plannerRoute, /require_parameters: true/);
   assert.match(plannerRoute, /max_tokens: 40000/);
   assert.match(plannerRoute, /reasoning: \{ effort: "high", exclude: true \}/);
@@ -102,6 +104,8 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(openRouter, /https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
   assert.match(openRouter, /const apiKey = getOpenRouterApiKey\(\)/);
   assert.match(openRouter, /Authorization: `Bearer \$\{apiKey\}`/);
+  assert.match(openRouter, /"X-OpenRouter-Metadata": "enabled"/);
+  assert.match(openRouter, /no \(\?:allowed \)\?providers\?/);
   assert.match(openRouter, /AbortSignal\.timeout\(90_000\)/);
   assert.match(storyRoute, /startVeoClip/);
   assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);

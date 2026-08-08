@@ -306,6 +306,9 @@ Keep every prompt between 500 and 1,800 characters and every caption under 350 c
 For every base clip and extension beat, caption must be the exact complete transcript of only that segment's spoken narration and dialogue in ${targetLanguage}, with no sound-effect labels, speaker labels, markdown, or timing notation. It is used to create timed accessible captions, so it must match that segment's prompt word-for-word.
 
 The positive and negative choice labels must be concrete actions, short enough for a child-facing button, and clearly binary. The negative option can be mistaken but must not be dangerous or cruel.
+
+OUTPUT JSON SHAPE: Return exactly one JSON object matching this JSON Schema. Use every required key, use no additional keys, and preserve the clip order opening, positive, negative, ending:
+${JSON.stringify(responseSchema)}
 `.trim();
 
     const response = await openRouterJson<OpenRouterResponse>({
@@ -314,21 +317,14 @@ The positive and negative choice labels must be concrete actions, short enough f
         {
           role: "system",
           content:
-            "You are a children's story director and continuity supervisor. Return only schema-valid JSON. Preserve the requested moral while avoiding shame, fear, manipulation, stereotypes, or unsafe behavior.",
+            "You are a children's story director and continuity supervisor. Return only one valid JSON object matching the supplied schema. Preserve the requested moral while avoiding shame, fear, manipulation, stereotypes, or unsafe behavior.",
         },
         { role: "user", content: prompt },
       ],
       temperature: 0.45,
       max_tokens: 40000,
       reasoning: { effort: "high", exclude: true },
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "kindpath_story_plan",
-          strict: true,
-          schema: responseSchema,
-        },
-      },
+      response_format: { type: "json_object" },
       provider: { require_parameters: true },
       plugins: [{ id: "response-healing" }],
     });
