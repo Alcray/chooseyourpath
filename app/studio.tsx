@@ -476,6 +476,14 @@ export function StoryStudio() {
       return;
     }
 
+    const isActiveVisibleResume =
+      pendingTransitionRef.current === null &&
+      visibleClipRef.current === clipId &&
+      playbackStarted &&
+      playback === clipId;
+
+    if (isActiveVisibleResume) return;
+
     if (pendingTransitionRef.current !== clipId) {
       videoRefs.current[clipId]?.pause();
       return;

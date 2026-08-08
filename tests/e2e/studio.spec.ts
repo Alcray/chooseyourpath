@@ -25,13 +25,16 @@ test("creates, tracks, and plays both branches without replacing video elements"
     Object.defineProperty(HTMLMediaElement.prototype, "play", {
       configurable: true,
       value: function play() {
+        this.setAttribute("data-e2e-playing", "true");
         queueMicrotask(() => this.dispatchEvent(new Event("playing")));
         return Promise.resolve();
       },
     });
     Object.defineProperty(HTMLMediaElement.prototype, "pause", {
       configurable: true,
-      value: function pause() {},
+      value: function pause() {
+        this.setAttribute("data-e2e-playing", "false");
+      },
     });
     Object.defineProperty(HTMLMediaElement.prototype, "load", {
       configurable: true,
@@ -153,15 +156,28 @@ test("creates, tracks, and plays both branches without replacing video elements"
     element.setAttribute("data-e2e-node", `persistent-${index}`);
   }));
 
+  async function pauseAndResumeVisibleClip() {
+    const visibleVideo = page.locator("video.visible");
+    await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "true");
+    await visibleVideo.evaluate((element) => (element as HTMLVideoElement).pause());
+    await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "false");
+    await visibleVideo.evaluate((element) => (element as HTMLVideoElement).play());
+    await page.waitForTimeout(50);
+    await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "true");
+  }
+
   await page.getByRole("button", { name: /Start story/ }).click();
   await expect(page.getByText("Now playing")).toBeVisible();
+  await pauseAndResumeVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator(".decision-overlay")).toBeVisible();
 
   await page.getByRole("button", { name: plan.positiveChoice.label }).click();
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/positive$"));
+  await pauseAndResumeVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/ending$"));
+  await pauseAndResumeVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.getByRole("dialog", { name: "Story complete" })).toBeVisible();
 
@@ -170,6 +186,7 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await page.locator("video.visible").dispatchEvent("ended");
   await page.getByRole("button", { name: plan.negativeChoice.label }).click();
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/negative$"));
+  await pauseAndResumeVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/ending$"));
   await page.locator("video.visible").dispatchEvent("ended");
