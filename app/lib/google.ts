@@ -28,7 +28,7 @@ export function getGoogleApiKey() {
   const value = generationEnv().GOOGLE_API_KEY?.trim();
   if (!value) {
     throw new GoogleApiError(
-      "Video generation is not configured yet. Add the Google Cloud API key and try again.",
+      "Google generation is not configured yet. Add the Google Cloud API key and try again.",
       503,
     );
   }

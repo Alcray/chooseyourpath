@@ -40,7 +40,6 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     veo,
     storyStore,
     schema,
-    openRouter,
     migration,
     hosting,
   ] = await Promise.all([
@@ -52,7 +51,6 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     readFile(new URL("../app/lib/veo.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/story-store.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/lib/openrouter.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0001_giant_maddog.sql", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     access(new URL("../public/og.png", import.meta.url)),
@@ -84,29 +82,20 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /warmingClipsRef/);
   assert.match(studio, /!seamlessTransition/);
   assert.match(studio, /clipDurationLabel\(plan, "positive"\)/);
-  assert.match(plannerRoute, /deepseek\/deepseek-v4-pro/);
-  assert.match(plannerRoute, /OUTPUT JSON SHAPE/);
-  assert.match(plannerRoute, /\$\{JSON\.stringify\(responseSchema\)\}/);
-  assert.match(plannerRoute, /response_format: \{ type: "json_object" \}/);
-  assert.doesNotMatch(plannerRoute, /type: "json_schema"/);
-  assert.match(plannerRoute, /require_parameters: true/);
-  assert.match(plannerRoute, /max_tokens: 40000/);
-  assert.match(plannerRoute, /reasoning: \{ effort: "high", exclude: true \}/);
+  assert.match(plannerRoute, /gemini-3\.5-flash-lite:generateContent/);
+  assert.match(plannerRoute, /googleJson<GeminiResponse>/);
+  assert.match(plannerRoute, /responseMimeType: "application\/json"/);
+  assert.match(plannerRoute, /responseSchema/);
+  assert.match(plannerRoute, /maxOutputTokens: 16384/);
+  assert.match(plannerRoute, /AbortSignal\.timeout\(45_000\)/);
+  assert.doesNotMatch(plannerRoute, /temperature:|thinkingBudget|JSON\.stringify\(responseSchema\)/);
   assert.match(plannerRoute, /minLength: 500, maxLength: 1800/);
-  assert.match(plannerRoute, /response-healing/);
   assert.match(plannerRoute, /UNSAFE_STORY_PATTERN/);
   assert.match(plannerRoute, /assertChildSafeText\(JSON\.stringify\(validated\), "plan"\)/);
-  assert.match(plannerRoute, /choice\.finish_reason === "length"/);
+  assert.match(plannerRoute, /candidate\.finishReason === "MAX_TOKENS"/);
   assert.match(plannerRoute, /expectedExtensionCount = id === "positive" \|\| id === "negative" \? 2 : 0/);
   assert.match(plannerRoute, /incomplete blueprint\. Please try again\./);
-  assert.doesNotMatch(plannerRoute, /gemini-2\.5-flash|googleJson/);
-  assert.match(openRouter, /OPENROUTER_API_KEY/);
-  assert.match(openRouter, /https:\/\/openrouter\.ai\/api\/v1\/chat\/completions/);
-  assert.match(openRouter, /const apiKey = getOpenRouterApiKey\(\)/);
-  assert.match(openRouter, /Authorization: `Bearer \$\{apiKey\}`/);
-  assert.match(openRouter, /"X-OpenRouter-Metadata": "enabled"/);
-  assert.match(openRouter, /no \(\?:allowed \)\?providers\?/);
-  assert.match(openRouter, /AbortSignal\.timeout\(90_000\)/);
+  assert.doesNotMatch(plannerRoute, /DeepSeek|OpenRouter|deepseek|openRouterJson/);
   assert.match(storyRoute, /startVeoClip/);
   assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);
   assert.match(statusRoute, /pollVeoClip/);

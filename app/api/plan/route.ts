@@ -11,20 +11,23 @@ import {
   type StoryBrief,
   type StoryPlan,
 } from "../../lib/story";
-import { apiErrorResponse, GoogleApiError } from "../../lib/google";
-import { openRouterJson } from "../../lib/openrouter";
+import { apiErrorResponse, googleJson, GoogleApiError } from "../../lib/google";
 import { getDb } from "../../../db";
 import { blueprints } from "../../../db/schema";
 import { requestOwnerId } from "../../lib/story-store";
 
-type OpenRouterResponse = {
-  choices?: Array<{
-    finish_reason?: string;
-    error?: { message?: string };
-    message?: {
-      content?: string | Array<{ type?: string; text?: string }>;
+type GeminiResponse = {
+  candidates?: Array<{
+    finishReason?: string;
+    finishMessage?: string;
+    content?: {
+      parts?: Array<{ text?: string; thought?: boolean }>;
     };
   }>;
+  promptFeedback?: {
+    blockReason?: string;
+    blockReasonMessage?: string;
+  };
 };
 
 const UNSAFE_STORY_PATTERN = /(?:\b(?:sexual\w*|rape\w*|nudit\w*|naked|suicid\w*|self[- ]?harm\w*|murder\w*|kill\w*|shoot\w*|stab\w*|gun\w*|weapon\w*|blood\w*|gore|dismember\w*|tortur\w*|kidnap\w*|abduct\w*|poison\w*|overdose\w*|child abuse)\b|սեռական|բռնաբար|մերկ|ինքնասպան|ինքնավնաս|սպան(?!ախ)|կրակել|դանակահար|ատրճանակ|զենք|արյուն|խոշտանգ|առևանգ|թույն|թունավոր)/iu;
@@ -227,31 +230,35 @@ function validatePlan(value: unknown): Omit<StoryPlan, "continuitySeed"> {
   return validated;
 }
 
-function parseOpenRouterPlan(response: OpenRouterResponse) {
-  const choice = response.choices?.[0];
-  if (!choice) throw new GoogleApiError("The story planner returned no blueprint.", 502);
-  if (choice.error || choice.finish_reason === "error") {
-    throw new GoogleApiError("The story planner could not complete this blueprint. Please try again.", 502);
+function parseGeminiPlan(response: GeminiResponse) {
+  const candidate = response.candidates?.[0];
+  if (!candidate) {
+    throw new GoogleApiError(
+      response.promptFeedback?.blockReason
+        ? "The story idea could not be planned safely. Try rephrasing the lesson."
+        : "The story planner returned no blueprint. Please try again.",
+      502,
+    );
   }
 
-  if (choice.finish_reason === "length") {
+  if (candidate.finishReason === "MAX_TOKENS") {
     throw new GoogleApiError("The story blueprint was cut short. Please try again.", 502);
   }
-  if (choice.finish_reason && choice.finish_reason !== "stop") {
+  if (candidate.finishReason && candidate.finishReason !== "STOP") {
     throw new GoogleApiError(
-      choice.finish_reason === "content_filter"
+      candidate.finishReason === "SAFETY" || candidate.finishReason === "PROHIBITED_CONTENT"
         ? "The story idea could not be planned safely. Try rephrasing the lesson."
         : "The story planner could not finish this blueprint. Please try again.",
       502,
     );
   }
 
-  const content = choice.message?.content;
-  const raw = (typeof content === "string"
-    ? content
-    : content?.map((part) => part.text ?? "").join("") ?? ""
-  ).trim();
-  if (!raw) throw new GoogleApiError("The story planner returned no blueprint.", 502);
+  const raw = (candidate.content?.parts ?? [])
+    .filter((part) => !part.thought)
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+  if (!raw) throw new GoogleApiError("The story planner returned no blueprint. Please try again.", 502);
 
   const cleanJson = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
@@ -305,31 +312,39 @@ Keep every prompt between 500 and 1,800 characters and every caption under 350 c
 
 For every base clip and extension beat, caption must be the exact complete transcript of only that segment's spoken narration and dialogue in ${targetLanguage}, with no sound-effect labels, speaker labels, markdown, or timing notation. It is used to create timed accessible captions, so it must match that segment's prompt word-for-word.
 
-The positive and negative choice labels must be concrete actions, short enough for a child-facing button, and clearly binary. The negative option can be mistaken but must not be dangerous or cruel.
-
-OUTPUT JSON SHAPE: Return exactly one JSON object matching this JSON Schema. Use every required key, use no additional keys, and preserve the clip order opening, positive, negative, ending:
-${JSON.stringify(responseSchema)}
+The positive and negative choice labels must be concrete actions, short enough for a child-facing button, and clearly binary. The negative option can be mistaken but must not be dangerous or cruel. Return the clips in this exact order: opening, positive, negative, ending.
 `.trim();
 
-    const response = await openRouterJson<OpenRouterResponse>({
-      model: "deepseek/deepseek-v4-pro",
-      messages: [
+    let response: GeminiResponse;
+    try {
+      response = await googleJson<GeminiResponse>(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent",
         {
-          role: "system",
-          content:
-            "You are a children's story director and continuity supervisor. Return only one valid JSON object matching the supplied schema. Preserve the requested moral while avoiding shame, fear, manipulation, stereotypes, or unsafe behavior.",
+          method: "POST",
+          signal: AbortSignal.timeout(45_000),
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [
+                {
+                  text: "You are a children's story director and continuity supervisor. Preserve the requested moral while avoiding shame, fear, manipulation, stereotypes, or unsafe behavior.",
+                },
+              ],
+            },
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+              maxOutputTokens: 16384,
+              responseMimeType: "application/json",
+              responseSchema,
+            },
+          }),
         },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.45,
-      max_tokens: 40000,
-      reasoning: { effort: "high", exclude: true },
-      response_format: { type: "json_object" },
-      provider: { require_parameters: true },
-      plugins: [{ id: "response-healing" }],
-    });
+      );
+    } catch (error) {
+      if (error instanceof GoogleApiError) throw error;
+      throw new GoogleApiError("The story planner is temporarily unreachable. Please try again.", 503, true);
+    }
 
-    const plan = validatePlan(parseOpenRouterPlan(response));
+    const plan = validatePlan(parseGeminiPlan(response));
     const continuitySeed = crypto.getRandomValues(new Uint32Array(1))[0];
     const storedPlan = { ...plan, continuitySeed } satisfies StoryPlan;
     const blueprintId = crypto.randomUUID();
