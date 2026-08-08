@@ -105,6 +105,8 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.doesNotMatch(plannerRoute, /DeepSeek|OpenRouter|deepseek|openRouterJson/);
   assert.match(storyRoute, /startVeoClip/);
   assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);
+  assert.match(storyRoute, /INSERT OR IGNORE INTO stories[\s\S]*VALUES \(\?, \?, \?, \?, \?, \?, \?, \?\)/);
+  assert.doesNotMatch(storyRoute, /MAX_NEW_STORIES_PER_WINDOW|STORY_WINDOW_MS|three new stories every 24 hours/);
   assert.match(statusRoute, /pollVeoClip/);
   assert.match(statusRoute, /startVeoExtension/);
   assert.match(statusRoute, /"extension_retry"/);

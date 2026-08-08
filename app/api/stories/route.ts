@@ -16,8 +16,6 @@ import { getStoryClips, requestOwnerId, storyPayload } from "../../lib/story-sto
 import { startVeoClip } from "../../lib/veo";
 
 const BLUEPRINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const STORY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const MAX_NEW_STORIES_PER_WINDOW = 3;
 
 type StartBody = { blueprintId: string; idempotencyKey: string };
 
@@ -245,8 +243,7 @@ export async function POST(request: Request) {
         .prepare(
           `INSERT OR IGNORE INTO stories
             (id, owner_user_id, idempotency_key, status, brief_json, plan_json, created_at, updated_at)
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?
-           WHERE (SELECT COUNT(*) FROM stories WHERE owner_user_id = ? AND created_at >= ?) < ?`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           storyId,
@@ -257,9 +254,6 @@ export async function POST(request: Request) {
           JSON.stringify(plan),
           now,
           now,
-          ownerUserId,
-          now - STORY_WINDOW_MS,
-          MAX_NEW_STORIES_PER_WINDOW,
         ),
       ...CLIP_IDS.map((slot, index) =>
         d1
@@ -293,8 +287,9 @@ export async function POST(request: Request) {
         return Response.json({ story: storyPayload(racedDuplicate, await getStoryClips(racedDuplicate.id)) });
       }
       throw new GoogleApiError(
-        "You can generate up to three new stories every 24 hours. Please try again later.",
-        429,
+        "The story request could not be started. Please try again.",
+        409,
+        true,
       );
     }
 

@@ -13,6 +13,7 @@
     "test:planner-live": "node tests/google-planner-live.mjs",
     "test:route-live": "node tests/planner-route-live.mjs",
     "test:pipeline-live": "node tests/story-pipeline-live.mjs",
+    "test:starts-live": "node tests/story-starts-live.mjs",
     "test:ui": "playwright test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
