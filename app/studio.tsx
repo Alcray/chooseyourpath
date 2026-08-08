@@ -24,6 +24,7 @@ type VideoMap = Partial<Record<ClipId, string>>;
 type ServerStory = {
   id: string;
   status: string;
+  createdAt: number;
   plan: StoryPlan;
   brief: StoryBrief;
   clips: Array<{
@@ -64,6 +65,15 @@ const CLIP_META: Record<ClipId, { number: string; label: string; detail: string;
   ending: { number: "04", label: "Shared ending", detail: "The lesson lands", icon: "◆" },
 };
 
+const JOB_STATUS_LABEL: Record<JobStatus, string> = {
+  waiting: "Queued",
+  starting: "Starting",
+  rendering: "Generating",
+  ingesting: "Saving securely",
+  ready: "Ready ✓",
+  failed: "Needs retry",
+};
+
 const emptyJobs = (): JobMap => ({
   opening: { status: "waiting" },
   positive: { status: "waiting" },
@@ -72,6 +82,12 @@ const emptyJobs = (): JobMap => ({
 });
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function formatElapsed(seconds: number) {
+  if (seconds < 60) return "less than 1 min";
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} min`;
+}
 
 async function apiRequest<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -109,8 +125,11 @@ export function StoryStudio() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState("");
   const [savedGeneration, setSavedGeneration] = useState<SavedGeneration | null>(null);
+  const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const pollingRef = useRef(false);
+  const pollingVersionRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,7 +156,7 @@ export function StoryStudio() {
           storyId: payload.story.id,
           plan: payload.story.plan,
           brief: payload.story.brief,
-          startedAt: Date.now(),
+          startedAt: payload.story.createdAt ?? Date.now(),
         };
         localStorage.setItem(GENERATION_STORAGE_KEY, JSON.stringify(recovered));
         setSavedGeneration(recovered);
@@ -151,11 +170,30 @@ export function StoryStudio() {
     };
   }, []);
 
+  useEffect(() => {
+    if (stage !== "generating" || generationStartedAt === null) return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - generationStartedAt) / 1000)));
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [generationStartedAt, stage]);
+
   const currentStep = { brief: 1, blueprint: 2, generating: 3, player: 4 }[stage];
   const selectedPair = getCharacterPair(brief.characterPairId);
   const selectedSetting = getSetting(brief.settingId);
   const readyCount = CLIP_IDS.filter((id) => jobs[id].status === "ready").length;
-  const progressPercent = Math.round((readyCount / 4) * 100);
+  const failedCount = CLIP_IDS.filter((id) => jobs[id].status === "failed").length;
+  const activeCount = CLIP_IDS.filter((id) => ["starting", "rendering", "ingesting"].includes(jobs[id].status)).length;
+  const queuedCount = CLIP_IDS.filter((id) => jobs[id].status === "waiting").length;
+  const stillWorkingCount = activeCount + queuedCount;
+  const progressMessage =
+    failedCount > 0
+      ? `${failedCount} clip${failedCount === 1 ? " needs" : "s need"} another try; completed clips are safe.`
+      : readyCount > 0 && stillWorkingCount > 0
+        ? `${readyCount} clip${readyCount === 1 ? " is" : "s are"} safely stored; ${stillWorkingCount} still working.`
+        : activeCount > 0 && elapsedSeconds >= 60
+          ? "Video rendering is usually the longest step. Each clip finishes independently."
+          : "Starting and checking all four video jobs.";
   const activeClipId: ClipId =
     playback === "positive" || playback === "negative" || playback === "ending"
       ? playback
@@ -176,12 +214,12 @@ export function StoryStudio() {
     setBrief((current) => ({ ...current, [key]: value }));
   }
 
-  function persistGeneration(storyId: string, planValue: StoryPlan, briefValue: StoryBrief) {
+  function persistGeneration(storyId: string, planValue: StoryPlan, briefValue: StoryBrief, startedAt: number) {
     const saved: SavedGeneration = {
       storyId,
       plan: planValue,
       brief: briefValue,
-      startedAt: Date.now(),
+      startedAt,
     };
     localStorage.setItem(GENERATION_STORAGE_KEY, JSON.stringify(saved));
     setSavedGeneration(saved);
@@ -235,17 +273,21 @@ export function StoryStudio() {
     }
   }
 
-  async function pollStory(storyId: string, planValue: StoryPlan, briefValue: StoryBrief) {
+  async function pollStory(storyId: string, planValue: StoryPlan, briefValue: StoryBrief, startedAt: number) {
     if (pollingRef.current) return;
     pollingRef.current = true;
+    const pollingVersion = ++pollingVersionRef.current;
     setError("");
     setStage("generating");
     setIsGenerating(true);
-    persistGeneration(storyId, planValue, briefValue);
+    setGenerationStartedAt(startedAt);
+    setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+    persistGeneration(storyId, planValue, briefValue, startedAt);
 
     try {
       for (let attempt = 0; attempt < 300; attempt += 1) {
         const response = await fetch(`/api/stories/${storyId}`, { cache: "no-store" });
+        if (pollingVersionRef.current !== pollingVersion) return;
         const payload = (await response.json()) as { story?: ServerStory; error?: string };
         if (!response.ok || !payload.story) throw new Error(payload.error ?? "Story status is unavailable.");
 
@@ -267,20 +309,26 @@ export function StoryStudio() {
           return;
         }
         await wait(6_000);
+        if (pollingVersionRef.current !== pollingVersion) return;
       }
       setError("Generation is still running. You can leave and resume this story later.");
     } catch (pollError) {
       setError(pollError instanceof Error ? pollError.message : "Story status could not be refreshed.");
     } finally {
-      pollingRef.current = false;
-      setIsGenerating(false);
+      if (pollingVersionRef.current === pollingVersion) {
+        pollingRef.current = false;
+        setIsGenerating(false);
+      }
     }
   }
 
   async function startGeneration(planValue: StoryPlan, briefValue: StoryBrief, approvedBlueprintId: string) {
+    const requestedAt = Date.now();
     setError("");
     setStage("generating");
     setIsGenerating(true);
+    setGenerationStartedAt(requestedAt);
+    setElapsedSeconds(0);
     setJobs({
       opening: { status: "starting" },
       positive: { status: "starting" },
@@ -294,9 +342,8 @@ export function StoryStudio() {
         idempotencyKey: pendingStartKey(approvedBlueprintId),
       });
       applyServerStory(result.story);
-      persistGeneration(result.story.id, planValue, briefValue);
-      setIsGenerating(false);
-      await pollStory(result.story.id, planValue, briefValue);
+      const startedAt = result.story.createdAt ?? requestedAt;
+      await pollStory(result.story.id, planValue, briefValue, startedAt);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "The video jobs could not be started.");
       setIsGenerating(false);
@@ -310,7 +357,7 @@ export function StoryStudio() {
     setPlan(savedGeneration.plan);
     setJobs(emptyJobs());
     setError("");
-    void pollStory(savedGeneration.storyId, savedGeneration.plan, savedGeneration.brief);
+    void pollStory(savedGeneration.storyId, savedGeneration.plan, savedGeneration.brief, savedGeneration.startedAt);
   }
 
   async function retryGeneration() {
@@ -320,14 +367,21 @@ export function StoryStudio() {
     try {
       await apiRequest(`/api/stories/${savedGeneration.storyId}/retry`, {});
       setIsGenerating(false);
-      await pollStory(savedGeneration.storyId, plan, brief);
+      await pollStory(savedGeneration.storyId, plan, brief, savedGeneration.startedAt);
     } catch (retryError) {
       setError(retryError instanceof Error ? retryError.message : "The unfinished clips could not be restarted.");
       setIsGenerating(false);
     }
   }
 
+  function refreshGenerationStatus() {
+    if (!savedGeneration || !plan) return;
+    void pollStory(savedGeneration.storyId, plan, brief, savedGeneration.startedAt);
+  }
+
   function resetStudio() {
+    pollingVersionRef.current += 1;
+    pollingRef.current = false;
     setVideoUrls({});
     localStorage.removeItem(GENERATION_STORAGE_KEY);
     localStorage.removeItem(PENDING_START_STORAGE_KEY);
@@ -336,6 +390,9 @@ export function StoryStudio() {
     setBlueprintId(null);
     setJobs(emptyJobs());
     setError("");
+    setIsGenerating(false);
+    setGenerationStartedAt(null);
+    setElapsedSeconds(0);
     setStage("brief");
   }
 
@@ -517,8 +574,25 @@ export function StoryStudio() {
               <h1>Building “{plan.title}”</h1>
               <p>You can leave this page and resume later. Each finished clip is kept while the others continue.</p>
             </div>
-            <div className="overall-progress" aria-label={`${progressPercent}% complete`}><i style={{ width: `${progressPercent}%` }} /></div>
-            <div className="progress-summary"><strong>{readyCount} of 4 clips ready</strong><span>{isGenerating ? "Rendering in parallel" : readyCount === 4 ? "Complete" : "Needs attention"}</span></div>
+            <div className="progress-panel">
+              <div className="progress-summary" aria-live="polite">
+                <div><strong>{readyCount} of 4 clips ready</strong><span>{activeCount > 0 ? `${activeCount} actively working` : failedCount > 0 ? "Waiting for your retry" : "Checking status"}</span></div>
+                <span>Elapsed · {formatElapsed(elapsedSeconds)}</span>
+              </div>
+              <div className="progress-track" role="progressbar" aria-label="Video clips ready" aria-valuenow={readyCount} aria-valuemin={0} aria-valuemax={4}>
+                {CLIP_IDS.map((id) => {
+                  const job = jobs[id];
+                  const meta = CLIP_META[id];
+                  return (
+                    <div className={`progress-segment ${job.status}`} key={id}>
+                      <span>{job.status === "ready" ? "✓" : meta.number}</span>
+                      <p><strong>{meta.label}</strong><small>{JOB_STATUS_LABEL[job.status]}</small></p>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="generation-timing">{progressMessage}</p>
+            </div>
 
             <div className="render-grid">
               {CLIP_IDS.map((id) => {
@@ -532,16 +606,19 @@ export function StoryStudio() {
                     <h2>{clip?.title ?? meta.label}</h2>
                     <p>{clip?.summary ?? meta.detail}</p>
                     <div className="clip-progress"><i /></div>
-                    <strong className="job-label">{{ waiting: "Waiting to start", starting: "Sending to director", rendering: "Veo is rendering", ingesting: "Saving the final clip", ready: "Ready to play", failed: "Needs another try" }[job.status]}</strong>
+                    <strong className="job-label">{JOB_STATUS_LABEL[job.status]}</strong>
                     {job.error && <span className="job-error">{job.error}</span>}
                   </article>
                 );
               })}
             </div>
 
-            {error && <div className="generation-error" role="alert"><span>!</span><p><strong>Some clips need attention</strong>{error}</p></div>}
-            {!isGenerating && readyCount < 4 && (
+            {error && <div className="generation-error" role="alert"><span>!</span><p><strong>{failedCount > 0 ? "Some clips need attention" : "Status refresh paused"}</strong>{error}</p></div>}
+            {!isGenerating && failedCount > 0 && (
               <button className="main-action centered" type="button" onClick={() => void retryGeneration()}>Retry unfinished clips <span>↻</span></button>
+            )}
+            {!isGenerating && failedCount === 0 && readyCount < 4 && (
+              <button className="main-action centered" type="button" onClick={refreshGenerationStatus}>Check status again <span>↻</span></button>
             )}
           </section>
         )}

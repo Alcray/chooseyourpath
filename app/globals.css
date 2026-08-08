@@ -415,10 +415,37 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .generation-heading { max-width: 760px; margin: 42px auto 22px; }
 .generation-heading h1 { margin-left: auto; margin-right: auto; }
 .generation-heading p { margin: 0 auto; }
-.overall-progress { max-width: 660px; height: 8px; margin: 28px auto 9px; overflow: hidden; border-radius: 999px; background: #dfe6dd; }
-.overall-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--sage), var(--gold)); transition: width 500ms ease; }
-.progress-summary { max-width: 660px; display: flex; justify-content: space-between; margin: 0 auto 28px; color: #78857d; font-size: 9px; }
-.progress-summary strong { color: var(--forest); }
+.progress-panel { max-width: 850px; margin: 26px auto 28px; padding: 18px; border: 1px solid #dce5dc; border-radius: 18px; background: rgba(255,255,255,.86); box-shadow: 0 12px 35px rgba(29,60,43,.06); text-align: left; }
+.progress-summary { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; color: #78857d; font-size: 9px; }
+.progress-summary > div { display: grid; gap: 3px; }
+.progress-summary strong { color: var(--forest); font-size: 12px; }
+.progress-summary > div span { color: #7b887f; }
+.progress-summary > span { flex: 0 0 auto; padding: 6px 9px; border-radius: 999px; background: #f0f4ef; font-weight: 750; }
+.progress-track { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.progress-segment { position: relative; min-height: 64px; display: flex; align-items: center; gap: 9px; overflow: hidden; padding: 10px; border: 1px solid #dce3dd; border-radius: 12px; background: #f5f7f4; transition: border-color 250ms ease, background 250ms ease; }
+.progress-segment > span { width: 29px; height: 29px; display: grid; place-items: center; z-index: 1; flex: 0 0 auto; color: #7a877f; border-radius: 50%; background: white; box-shadow: 0 0 0 1px #d8e0da; font-size: 8px; font-weight: 900; }
+.progress-segment p { z-index: 1; display: grid; gap: 3px; min-width: 0; margin: 0; }
+.progress-segment strong { overflow: hidden; color: #5d6d63; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.progress-segment small { color: #89948d; font-size: 7px; }
+.progress-segment.starting,
+.progress-segment.rendering,
+.progress-segment.ingesting { border-color: #e9c97e; background: #fff7e4; }
+.progress-segment.starting::after,
+.progress-segment.rendering::after,
+.progress-segment.ingesting::after { content: ""; position: absolute; inset: auto 0 0; height: 4px; background: repeating-linear-gradient(90deg, var(--gold) 0 18px, #f7d995 18px 36px); background-size: 72px 100%; animation: progressStripe 1.2s linear infinite; }
+.progress-segment.starting > span,
+.progress-segment.rendering > span,
+.progress-segment.ingesting > span { color: #76571b; box-shadow: 0 0 0 2px rgba(239,179,77,.28); }
+.progress-segment.ready { border-color: #b7d1bd; background: #edf6ec; }
+.progress-segment.ready > span { color: white; background: #64a075; box-shadow: none; font-size: 13px; }
+.progress-segment.ready strong,
+.progress-segment.ready small { color: #39714a; }
+.progress-segment.failed { border-color: #edc4b0; background: #fff2eb; }
+.progress-segment.failed > span { color: white; background: var(--orange); box-shadow: none; }
+.progress-segment.failed strong,
+.progress-segment.failed small { color: #914d31; }
+.generation-timing { margin: 12px 1px 0; color: #68766e; font-size: 9px; line-height: 1.45; }
+@keyframes progressStripe { to { background-position: 72px 0; } }
 .render-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; text-align: left; }
 .render-card { min-height: 245px; padding: 18px; border-radius: 18px; box-shadow: 0 10px 28px rgba(29,60,43,.07); }
 .render-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; }
@@ -432,13 +459,13 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .render-card.ready .status-dot { border: 0; background: #64a075; box-shadow: 0 0 0 4px rgba(100,160,117,.12); }
 .render-card.failed .status-dot { border: 0; background: var(--orange); }
 .clip-progress { height: 5px; margin: 19px 0 10px; overflow: hidden; border-radius: 999px; background: #e7ece6; }
-.clip-progress i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--sage); }
-.render-card.starting .clip-progress i { width: 18%; }
-.render-card.rendering .clip-progress i { width: 68%; animation: renderPulse 1.8s ease-in-out infinite alternate; }
-.render-card.ingesting .clip-progress i { width: 88%; animation: renderPulse 1.8s ease-in-out infinite alternate; }
-.render-card.ready .clip-progress i { width: 100%; background: #64a075; }
-.render-card.failed .clip-progress i { width: 100%; background: var(--orange); }
-@keyframes renderPulse { from { opacity: .55; transform: translateX(-8%); } to { opacity: 1; transform: translateX(25%); } }
+.clip-progress i { display: block; width: 34%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--sage), var(--gold)); transform: translateX(-120%); }
+.render-card.starting .clip-progress i,
+.render-card.rendering .clip-progress i,
+.render-card.ingesting .clip-progress i { animation: clipSweep 1.5s ease-in-out infinite; }
+.render-card.ready .clip-progress i { width: 100%; background: #64a075; transform: none; }
+.render-card.failed .clip-progress i { width: 100%; background: var(--orange); transform: none; }
+@keyframes clipSweep { to { transform: translateX(300%); } }
 .job-label { color: #66746c; font-size: 9px; }
 .render-card.ready .job-label { color: #39714a; }
 .render-card.failed .job-label { color: #9a5134; }
@@ -529,6 +556,8 @@ a:focus-visible { outline: 3px solid rgba(239, 179, 77, 0.72); outline-offset: 3
   .preview-choices,
   .clip-blueprints,
   .render-grid { grid-template-columns: 1fr; }
+  .progress-track { grid-template-columns: 1fr 1fr; }
+  .progress-summary { align-items: flex-start; flex-direction: column; }
   .view-heading,
   .player-heading { align-items: flex-start; flex-direction: column; }
   .view-heading h1,

@@ -36,6 +36,7 @@ export function storyPayload(story: StoredStory, storedClips: StoredClip[]) {
   return {
     id: story.id,
     status: story.status,
+    createdAt: story.createdAt,
     plan,
     brief,
     clips: CLIP_IDS.map((slot) => {

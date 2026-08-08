@@ -18,8 +18,11 @@ import { requestOwnerId } from "../../lib/story-store";
 
 type GeminiResponse = {
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
+    finishMessage?: string;
+    content?: { parts?: Array<{ text?: string; thought?: boolean }> };
   }>;
+  promptFeedback?: { blockReason?: string; blockReasonMessage?: string };
 };
 
 function authenticatedOwnerId(request: Request) {
@@ -169,6 +172,44 @@ function validatePlan(value: unknown): Omit<StoryPlan, "continuitySeed"> {
   };
 }
 
+function parseGeminiPlan(response: GeminiResponse) {
+  const candidate = response.candidates?.[0];
+  if (!candidate) {
+    const blocked = response.promptFeedback?.blockReason;
+    throw new GoogleApiError(
+      blocked ? "The story idea could not be planned safely. Try rephrasing the lesson." : "The story planner returned no blueprint.",
+      502,
+    );
+  }
+
+  if (candidate.finishReason === "MAX_TOKENS") {
+    throw new GoogleApiError("The story blueprint was cut short. Please try again.", 502);
+  }
+  if (candidate.finishReason && candidate.finishReason !== "STOP") {
+    const safetyReasons = new Set(["SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"]);
+    throw new GoogleApiError(
+      safetyReasons.has(candidate.finishReason)
+        ? "The story idea could not be planned safely. Try rephrasing the lesson."
+        : "The story planner could not finish this blueprint. Please try again.",
+      502,
+    );
+  }
+
+  const raw = candidate.content?.parts
+    ?.filter((part) => !part.thought)
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+  if (!raw) throw new GoogleApiError("The story planner returned no blueprint.", 502);
+
+  const cleanJson = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    return JSON.parse(cleanJson) as unknown;
+  } catch {
+    throw new GoogleApiError("The story planner returned an incomplete blueprint. Please try again.", 502);
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const ownerUserId = authenticatedOwnerId(request);
@@ -207,6 +248,8 @@ Build exactly four independent 8-second video prompts:
 
 Every prompt must be production-ready: include exact character/world bible, timing beats [0-2s], [2-6s], [6-8s], camera, action, facial emotion, ambient sound, music, and exact narrator dialogue. Use one consistent warm narrator voice. Avoid subtitles and any written words because video models often garble text.
 
+Be concise: keep each video prompt between 600 and 1,800 characters and each caption under 350 characters. An 8-second clip cannot hold long dialogue.
+
 For every clip, caption must be the exact complete transcript of all spoken narration and dialogue in ${targetLanguage}, with no sound-effect labels, speaker labels, markdown, or timing notation. It is used to create an accessible caption track, so it must match that clip's prompt word-for-word.
 
 The positive and negative choice labels must be concrete actions, short enough for a child-facing button, and clearly binary. The negative option can be mistaken but must not be dangerous or cruel.
@@ -227,7 +270,8 @@ The positive and negative choice labels must be concrete actions, short enough f
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.45,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 16384,
+            thinkingConfig: { thinkingBudget: 0, includeThoughts: false },
             responseMimeType: "application/json",
             responseSchema,
           },
@@ -235,11 +279,7 @@ The positive and negative choice labels must be concrete actions, short enough f
       },
     );
 
-    const raw = response.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) throw new Error("The story planner returned no blueprint.");
-
-    const parsed = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, ""));
-    const plan = validatePlan(parsed);
+    const plan = validatePlan(parseGeminiPlan(response));
     const continuitySeed = crypto.getRandomValues(new Uint32Array(1))[0];
     const storedPlan = { ...plan, continuitySeed } satisfies StoryPlan;
     const blueprintId = crypto.randomUUID();

@@ -31,8 +31,9 @@ test("server-renders the KindPath parent studio", async () => {
 });
 
 test("keeps the four-clip workflow and hosted assets wired", async () => {
-  const [studio, storyRoute, statusRoute, hosting] = await Promise.all([
+  const [studio, plannerRoute, storyRoute, statusRoute, hosting] = await Promise.all([
     readFile(new URL("../app/studio.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/plan/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
@@ -44,6 +45,13 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /chooseBranch\("negative"\)/);
   assert.match(studio, /setPlayback\("ending"\)/);
   assert.match(studio, /\/api\/stories\/\$\{storyId\}/);
+  assert.match(studio, /className="progress-track"/);
+  assert.match(studio, /aria-valuenow=\{readyCount\}/);
+  assert.match(plannerRoute, /thinkingBudget:\s*0/);
+  assert.match(plannerRoute, /maxOutputTokens:\s*16384/);
+  assert.match(plannerRoute, /candidate\.finishReason === "MAX_TOKENS"/);
+  assert.match(plannerRoute, /filter\(\(part\) => !part\.thought\)/);
+  assert.match(plannerRoute, /incomplete blueprint\. Please try again\./);
   assert.match(storyRoute, /startVeoClip/);
   assert.match(statusRoute, /pollVeoClip/);
   assert.match(statusRoute, /getMediaBucket\(\)\.put/);
