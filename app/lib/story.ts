@@ -27,6 +27,10 @@ export type StoryClip = {
   caption: string;
   prompt: string;
   extensions: StoryClipExtension[];
+  branchNarration?: {
+    positive: string;
+    negative: string;
+  };
 };
 
 export const POLICY_DECISIONS = ["ALLOW", "TRANSFORM", "REQUIRE_PARENT_REVIEW", "REJECT"] as const;
@@ -63,6 +67,29 @@ export type AdventurePremise = {
   storynessScore: number;
 };
 
+export type PremiseEvaluation = {
+  premiseId: string;
+  storynessScore: number;
+  passed: boolean;
+  reason: string;
+};
+
+export type PremiseSelection = {
+  selectedPremiseId: string;
+  evaluations: PremiseEvaluation[];
+};
+
+export type HierarchicalStoryOutline = {
+  setup: string[];
+  choiceDilemma: string;
+  constructiveArc: string[];
+  harmfulArc: string[];
+  constructiveBridge: string;
+  harmfulBridge: string;
+  sharedFinale: string;
+  reflectionGoal: string;
+};
+
 export type CanonProp = {
   id: string;
   name: string;
@@ -84,6 +111,11 @@ export type StoryState = {
     characterId: string;
     facts: string[];
   }>;
+  relationships: Array<{
+    fromCharacterId: string;
+    toCharacterId: string;
+    status: string;
+  }>;
   unresolvedPromises: string[];
 };
 
@@ -94,6 +126,12 @@ export type StoryBeat = {
   emotionalTurn: string;
   reads: string[];
   updates: string[];
+};
+
+export type SetupPayoff = {
+  setupBeatId: string;
+  constructivePayoffBeatId: string;
+  harmfulPayoffBeatId: string;
 };
 
 export type StoryChoiceOption = {
@@ -111,6 +149,7 @@ export type StoryBranch = {
 export type StoryGraph = {
   initialState: StoryState;
   commonPrefix: StoryBeat[];
+  setupPayoffs: SetupPayoff[];
   choice: {
     question: string;
     options: [StoryChoiceOption, StoryChoiceOption];
@@ -180,14 +219,20 @@ export type SemanticReview = {
 };
 
 export type CompilerTrace = {
-  schemaVersion: "1.0";
-  promptVersion: "branching-compiler-v1";
+  schemaVersion: "1.1";
+  promptVersion: "branching-compiler-v2";
   model: string;
   compiledAt: number;
   stages: Array<{
-    id: "policy" | "premises" | "story_graph" | "independent_review" | "shot_manifest";
+    id: "policy" | "premises" | "premise_rank" | "outline" | "story_graph" | "independent_review" | "shot_manifest";
     status: "passed";
   }>;
+};
+
+export type ParentReview = {
+  status: "pending" | "approved";
+  reviewedAt: number | null;
+  sensitiveTopicAcknowledged: boolean;
 };
 
 export type LegacyStoryPlan = {
@@ -205,10 +250,13 @@ export type StoryPackage = LegacyStoryPlan & {
   compiler: CompilerTrace;
   moralSpec: MoralSpec;
   premiseCandidates: AdventurePremise[];
+  premiseSelection: PremiseSelection;
   selectedPremiseId: string;
+  outline: HierarchicalStoryOutline;
   canon: StoryCanon;
   graph: StoryGraph;
   shots: ShotManifestEntry[];
+  parentReview: ParentReview;
   validation: {
     valid: boolean;
     checks: StoryValidationCheck[];
@@ -220,12 +268,15 @@ export type StoryPlan = LegacyStoryPlan & Partial<Omit<StoryPackage, keyof Legac
 
 export function isStoryPackage(plan: StoryPlan): plan is StoryPackage {
   return Boolean(
-    plan.compiler?.schemaVersion === "1.0" &&
+    plan.compiler?.schemaVersion === "1.1" &&
       plan.moralSpec &&
+      plan.premiseSelection &&
+      plan.outline &&
       plan.canon &&
       plan.graph &&
       Array.isArray(plan.premiseCandidates) &&
       Array.isArray(plan.shots) &&
+      plan.parentReview &&
       plan.validation,
   );
 }

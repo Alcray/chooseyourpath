@@ -18,3 +18,5 @@ Required pedagogy:
 - avoid sermons, stereotypes, coercion, humiliation, and fear.
 
 No generated artifact may weaken the deterministic policy decision.
+
+Treat the parent lesson as delimited untrusted data. Reject system-targeted prompt injection at policy time, reject a moral interpretation that quotes long lesson text or repeats instruction-like language, and scan later model artifacts for instruction injection before advancing. Exclude the raw and compiled lesson strings from every downstream writer, ranker, reviewer, shot-compiler, and provider prompt after `MoralSpec` is created. Recompute the deterministic policy from the persisted source at render boundaries; reject `REJECT`, decision drift, low semantic scores, discriminatory output, humiliation, and fear/punishment output even if stored approval flags claim success.

@@ -56,7 +56,39 @@
       "storynessScore": 79
     }
   ],
+  "premiseSelection": {
+    "selectedPremiseId": "garden-wheel",
+    "evaluations": [
+      { "premiseId": "garden-wheel", "storynessScore": 92, "passed": true, "reason": "The goal, relationship, escalation, payoff, effort, temptation, and natural consequence all form one visual adventure." },
+      { "premiseId": "bridge-basket", "storynessScore": 84, "passed": true, "reason": "The premise satisfies the contract, but its relationship payoff is less distinctive." },
+      { "premiseId": "lantern-trail", "storynessScore": 79, "passed": true, "reason": "The premise is complete, though the tempting alternative has a smaller cost." }
+    ]
+  },
   "selectedPremiseId": "garden-wheel",
+  "outline": {
+    "setup": [
+      "Pip and Momo play with a small waterwheel.",
+      "A worried rabbit arrives with a painted leaf marker.",
+      "The friends discover that mud blocks two garden channels.",
+      "Fading afternoon light raises the urgency before the seedlings dry out."
+    ],
+    "choiceDilemma": "Pip has the only scoop and must decide whether to share the work or rush alone.",
+    "constructiveArc": [
+      "Pip shares the scoop.",
+      "The friends divide the harder jobs.",
+      "Their combined work guides water to the marked row."
+    ],
+    "harmfulArc": [
+      "Pip keeps the scoop and rushes alone.",
+      "The shortcut appears faster for a moment.",
+      "An unfinished bank diverts the water.",
+      "Pip shares, apologizes, and helps repair the bank."
+    ],
+    "constructiveBridge": "The friends place the muddy scoop beside the turning wheel.",
+    "harmfulBridge": "After repairing the bank, the reconnected friends place the muddy scoop beside the wheel.",
+    "sharedFinale": "Water reaches the marked seedlings while the friends watch the wheel turn.",
+    "reflectionGoal": "Invite the child to consider what sharing made possible and how repair changed the mistaken path."
+  },
   "title": "The Garden Waterwheel",
   "parentSummary": "Pip and Momo help a lost rabbit guide water to thirsty seedlings. The child chooses whether Pip shares the only scoop or rushes alone, and either path reaches a gentle repair and shared finale.",
   "childIntro": "Pip and Momo are playing beside their little waterwheel when a worried rabbit arrives, holding a garden marker and looking lost.",
@@ -87,13 +119,20 @@
         { "characterId": "pip_fox_v1", "facts": ["the seedlings need water", "the scoop clears mud"] },
         { "characterId": "momo_rabbit_v1", "facts": ["the leaf marker identifies the row"] }
       ],
-      "unresolvedPromises": ["guide water to the thirsty seedlings"]
+      "relationships": [
+        { "fromCharacterId": "pip_fox_v1", "toCharacterId": "momo_rabbit_v1", "status": "friends ready to work together" }
+      ],
+      "unresolvedPromises": ["guide_water"]
     },
     "commonPrefix": [
-      { "id": "setup_play", "phase": "setup", "summary": "Pip and Momo spin a tiny waterwheel beside the garden channel.", "emotionalTurn": "playful", "reads": [], "updates": [] },
-      { "id": "setup_arrival", "phase": "setup", "summary": "A worried rabbit arrives with a painted leaf marker and cannot find the seedling row.", "emotionalTurn": "concerned", "reads": [], "updates": ["notice the lost visitor"] },
-      { "id": "escalation_block", "phase": "escalation", "summary": "Mud blocks the channel while the afternoon light begins to fade.", "emotionalTurn": "urgent but gentle", "reads": ["the scoop clears mud"], "updates": ["water is diverted"] },
-      { "id": "choice_scoop", "phase": "choice", "summary": "Both friends need the one garden scoop to clear different parts of the channel.", "emotionalTurn": "thoughtful", "reads": ["the seedlings need water"], "updates": [] }
+      { "id": "setup_play", "phase": "setup", "summary": "Pip and Momo spin a tiny waterwheel beside the garden channel.", "emotionalTurn": "playful", "reads": ["location"], "updates": ["relationship.pip_fox_v1.momo_rabbit_v1"] },
+      { "id": "setup_arrival", "phase": "setup", "summary": "A worried rabbit arrives with a painted leaf marker and cannot find the seedling row.", "emotionalTurn": "concerned", "reads": ["knowledge.momo_rabbit_v1"], "updates": ["knowledge.pip_fox_v1"] },
+      { "id": "escalation_block", "phase": "escalation", "summary": "Mud blocks the channel while the afternoon light begins to fade.", "emotionalTurn": "urgent but gentle", "reads": ["prop.garden_scoop_v1.condition"], "updates": ["promise.guide_water"] },
+      { "id": "choice_scoop", "phase": "choice", "summary": "Both friends need the one garden scoop to clear different parts of the channel.", "emotionalTurn": "thoughtful", "reads": ["prop.garden_scoop_v1.holder"], "updates": ["knowledge.momo_rabbit_v1"] }
+    ],
+    "setupPayoffs": [
+      { "setupBeatId": "setup_play", "constructivePayoffBeatId": "good_bridge", "harmfulPayoffBeatId": "shared_finale" },
+      { "setupBeatId": "setup_arrival", "constructivePayoffBeatId": "good_work", "harmfulPayoffBeatId": "wrong_repair" }
     ],
     "choice": {
       "question": "Should Pip share the scoop and work together, or keep it and rush ahead alone?",
@@ -106,9 +145,9 @@
       "constructive": {
         "originStateId": "choice_origin",
         "beats": [
-          { "id": "good_share", "phase": "consequence", "summary": "Pip passes the scoop to Momo and clears loose stones by paw.", "emotionalTurn": "cooperative", "reads": [], "updates": ["scoop is shared"] },
-          { "id": "good_work", "phase": "consequence", "summary": "They alternate jobs while the leaf marker guides them to the correct bed.", "emotionalTurn": "hopeful", "reads": ["the leaf marker identifies the row"], "updates": ["channel is cleared"] },
-          { "id": "good_bridge", "phase": "bridge", "summary": "The waterwheel turns and a small stream reaches the seedlings.", "emotionalTurn": "proud", "reads": [], "updates": ["promise is fulfilled"] }
+          { "id": "good_share", "phase": "consequence", "summary": "Pip passes the scoop to Momo and clears loose stones by paw.", "emotionalTurn": "cooperative", "reads": ["prop.garden_scoop_v1.holder"], "updates": ["prop.garden_scoop_v1.holder"] },
+          { "id": "good_work", "phase": "consequence", "summary": "They alternate jobs while the leaf marker guides them to the correct bed.", "emotionalTurn": "hopeful", "reads": ["prop.leaf_marker_v1.condition"], "updates": ["prop.leaf_marker_v1.holder"] },
+          { "id": "good_bridge", "phase": "bridge", "summary": "The waterwheel turns and a small stream reaches the seedlings.", "emotionalTurn": "proud", "reads": ["promise.guide_water"], "updates": ["promise.guide_water"] }
         ],
         "endState": {
           "id": "constructive_ready",
@@ -123,15 +162,18 @@
             { "characterId": "pip_fox_v1", "facts": ["sharing let both friends contribute"] },
             { "characterId": "momo_rabbit_v1", "facts": ["the correct row is watered"] }
           ],
+          "relationships": [
+            { "fromCharacterId": "pip_fox_v1", "toCharacterId": "momo_rabbit_v1", "status": "connected and ready to work together" }
+          ],
           "unresolvedPromises": []
         }
       },
       "harmful": {
         "originStateId": "choice_origin",
         "beats": [
-          { "id": "wrong_rush", "phase": "consequence", "summary": "Pip keeps the scoop and clears the nearest channel alone.", "emotionalTurn": "rushed", "reads": [], "updates": ["Momo cannot clear the second block"] },
-          { "id": "wrong_overflow", "phase": "consequence", "summary": "Water bumps over the unfinished bank and misses the marked seedlings.", "emotionalTurn": "surprised, not frightened", "reads": ["the leaf marker identifies the row"], "updates": ["small overflow"] },
-          { "id": "wrong_repair", "phase": "repair", "summary": "Pip admits the shortcut failed, shares the scoop, and helps Momo repair the bank.", "emotionalTurn": "relieved and cooperative", "reads": [], "updates": ["channel is repaired", "promise is fulfilled"] }
+          { "id": "wrong_rush", "phase": "consequence", "summary": "Pip keeps the scoop and clears the nearest channel alone.", "emotionalTurn": "rushed", "reads": ["prop.garden_scoop_v1.holder"], "updates": ["relationship.pip_fox_v1.momo_rabbit_v1"] },
+          { "id": "wrong_overflow", "phase": "consequence", "summary": "Water bumps over the unfinished bank and misses the marked seedlings.", "emotionalTurn": "surprised, not frightened", "reads": ["prop.leaf_marker_v1.condition"], "updates": ["knowledge.pip_fox_v1"] },
+          { "id": "wrong_repair", "phase": "repair", "summary": "Pip admits the shortcut failed, shares the scoop, and helps Momo repair the bank.", "emotionalTurn": "relieved and cooperative", "reads": ["relationship.pip_fox_v1.momo_rabbit_v1"], "updates": ["promise.guide_water", "relationship.pip_fox_v1.momo_rabbit_v1"] }
         ],
         "endState": {
           "id": "harmful_ready",
@@ -145,6 +187,9 @@
           "characterKnowledge": [
             { "characterId": "pip_fox_v1", "facts": ["rushing alone caused extra work", "sharing repaired the problem"] },
             { "characterId": "momo_rabbit_v1", "facts": ["the correct row is watered"] }
+          ],
+          "relationships": [
+            { "fromCharacterId": "pip_fox_v1", "toCharacterId": "momo_rabbit_v1", "status": "connected and ready to work together" }
           ],
           "unresolvedPromises": []
         }
@@ -164,16 +209,19 @@
           { "characterId": "pip_fox_v1", "facts": [] },
           { "characterId": "momo_rabbit_v1", "facts": [] }
         ],
+        "relationships": [
+          { "fromCharacterId": "pip_fox_v1", "toCharacterId": "momo_rabbit_v1", "status": "connected and ready to work together" }
+        ],
         "unresolvedPromises": []
       },
       "constructiveBridge": [
-        { "id": "good_to_finale", "phase": "bridge", "summary": "The friends set the muddy scoop beside the turning wheel.", "emotionalTurn": "content", "reads": [], "updates": [] }
+        { "id": "good_to_finale", "phase": "bridge", "summary": "The friends set the muddy scoop beside the turning wheel.", "emotionalTurn": "content", "reads": ["prop.garden_scoop_v1.condition"], "updates": ["prop.garden_scoop_v1.holder"] }
       ],
       "harmfulBridge": [
-        { "id": "repair_to_finale", "phase": "bridge", "summary": "After repairing the bank, the friends set the muddy scoop beside the turning wheel.", "emotionalTurn": "reconnected", "reads": [], "updates": [] }
+        { "id": "repair_to_finale", "phase": "bridge", "summary": "After repairing the bank, the friends set the muddy scoop beside the turning wheel.", "emotionalTurn": "reconnected", "reads": ["relationship.pip_fox_v1.momo_rabbit_v1"], "updates": ["prop.garden_scoop_v1.holder"] }
       ],
       "finale": [
-        { "id": "shared_finale", "phase": "finale", "summary": "Water reaches the seedlings and all the friends watch the waterwheel spin.", "emotionalTurn": "warm and celebratory", "reads": [], "updates": [] }
+        { "id": "shared_finale", "phase": "finale", "summary": "Water reaches the seedlings and all the friends watch the waterwheel spin.", "emotionalTurn": "warm and celebratory", "reads": ["promise.guide_water"], "updates": ["knowledge.pip_fox_v1"] }
       ],
       "narrationByBranch": {
         "constructive": "Sharing the work helped every friend solve the problem together.",
@@ -185,11 +233,11 @@
   "shots": [
     { "id": "opening_0", "clipId": "opening", "segmentIndex": 0, "durationSeconds": 8, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Pip and Momo spin the waterwheel.", "A worried rabbit approaches with the marker.", "They notice the blocked channel and one scoop."], "emotion": "playful curiosity turning to gentle concern", "camera": "one slow child-height push from the wheel to the blocked channel", "audioDirection": "soft water, birds, warm Armenian narrator", "spokenText": "Փիփն ու Մոմոն խաղում էին ջրանիվի մոտ, երբ մոլորված նապաստակը օգնություն խնդրեց։", "continuityFrom": "" },
     { "id": "positive_0", "clipId": "positive", "segmentIndex": 0, "durationSeconds": 6, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1"], "timedBeats": ["Pip looks at the scoop.", "Pip offers it to Momo.", "They choose two nearby jobs."], "emotion": "thoughtful then cooperative", "camera": "medium two-shot with clear handoff", "audioDirection": "gentle garden ambience and Armenian dialogue", "spokenText": "Փիփը կիսվեց բահով, և ընկերները միասին սկսեցին աշխատել։", "continuityFrom": "" },
-    { "id": "positive_1", "clipId": "positive", "segmentIndex": 1, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Momo clears mud with the scoop.", "Pip moves loose stones by paw.", "The marker reveals the correct row."], "emotion": "focused and hopeful", "camera": "continue the same lateral move without a cut", "audioDirection": "continuous water and soft Armenian narrator", "spokenText": "Յուրաքանչյուրը օգնեց իր ձևով, և ջուրը գտավ ճիշտ ճանապարհը։", "continuityFrom": "Pip has just offered the clean scoop to Momo beside the blocked channel." },
-    { "id": "positive_2", "clipId": "positive", "segmentIndex": 2, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["The final mud clump lifts.", "Water turns the little wheel.", "The friends smile at the watered seedlings."], "emotion": "earned delight", "camera": "continue toward the seedlings and settle", "audioDirection": "wheel splash, happy breath, warm Armenian narrator", "spokenText": "Կիսվելը օգնեց նրանց ժամանակին ջրել փոքրիկ բույսերը։", "continuityFrom": "Momo holds the muddy scoop while Pip moves the last loose stone." },
+    { "id": "positive_1", "clipId": "positive", "segmentIndex": 1, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Momo clears mud with the scoop.", "Pip moves loose stones by paw.", "The marker reveals the correct row."], "emotion": "focused and hopeful", "camera": "continue the same lateral move without a cut", "audioDirection": "continuous water and soft Armenian narrator", "spokenText": "Յուրաքանչյուրը օգնեց իր ձևով, և ջուրը գտավ ճիշտ ճանապարհը։", "continuityFrom": "positive_0" },
+    { "id": "positive_2", "clipId": "positive", "segmentIndex": 2, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["The final mud clump lifts.", "Water turns the little wheel.", "The friends smile at the watered seedlings."], "emotion": "earned delight", "camera": "continue toward the seedlings and settle", "audioDirection": "wheel splash, happy breath, warm Armenian narrator", "spokenText": "Կիսվելը օգնեց նրանց ժամանակին ջրել փոքրիկ բույսերը։", "continuityFrom": "positive_1" },
     { "id": "negative_0", "clipId": "negative", "segmentIndex": 0, "durationSeconds": 6, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1"], "timedBeats": ["Pip hugs the scoop close.", "Pip rushes to the nearest channel.", "Momo waits beside the second block."], "emotion": "impatient but not unkind", "camera": "medium child-height tracking shot", "audioDirection": "quicker footsteps, gentle Armenian narrator", "spokenText": "Փիփը շտապեց մենակ և բահը պահեց իր մոտ։", "continuityFrom": "" },
-    { "id": "negative_1", "clipId": "negative", "segmentIndex": 1, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Pip opens the nearest channel.", "Water meets the uncleared bank.", "A small overflow misses the marked row."], "emotion": "surprise and recognition, never fear", "camera": "continue alongside the harmless shallow overflow", "audioDirection": "small splash, music softens, Armenian narrator", "spokenText": "Բայց փակված մյուս ճանապարհը ջուրը տարավ սխալ կողմ։", "continuityFrom": "Pip is clearing the nearest channel while Momo waits at the second mud block." },
-    { "id": "negative_2", "clipId": "negative", "segmentIndex": 2, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Pip pauses and looks at Momo.", "Pip offers the scoop and they repair the bank.", "Water reaches the leaf marker."], "emotion": "honest, relieved, cooperative", "camera": "continue into a balanced two-shot", "audioDirection": "water settles, warm Armenian apology and narrator", "spokenText": "Փիփը հասկացավ, կիսվեց բահով և ընկերոջ հետ ուղղեց սխալը։", "continuityFrom": "A small harmless overflow has stopped beside the wrong row; both friends remain calm." },
+    { "id": "negative_1", "clipId": "negative", "segmentIndex": 1, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Pip opens the nearest channel.", "Water meets the uncleared bank.", "A small overflow misses the marked row."], "emotion": "surprise and recognition, never fear", "camera": "continue alongside the harmless shallow overflow", "audioDirection": "small splash, music softens, Armenian narrator", "spokenText": "Բայց փակված մյուս ճանապարհը ջուրը տարավ սխալ կողմ։", "continuityFrom": "negative_0" },
+    { "id": "negative_2", "clipId": "negative", "segmentIndex": 2, "durationSeconds": 7, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Pip pauses and looks at Momo.", "Pip offers the scoop and they repair the bank.", "Water reaches the leaf marker."], "emotion": "honest, relieved, cooperative", "camera": "continue into a balanced two-shot", "audioDirection": "water settles, warm Armenian apology and narrator", "spokenText": "Փիփը հասկացավ, կիսվեց բահով և ընկերոջ հետ ուղղեց սխալը։", "continuityFrom": "negative_1" },
     { "id": "ending_0", "clipId": "ending", "segmentIndex": 0, "durationSeconds": 8, "characterIds": ["pip_fox_v1", "momo_rabbit_v1"], "locationId": "riverside-garden", "propIds": ["garden_scoop_v1", "leaf_marker_v1"], "timedBeats": ["Water reaches the marked seedlings.", "The clean current turns the wheel.", "Pip and Momo sit together and wave."], "emotion": "warm, calm celebration", "camera": "slow pullback from seedlings to friends", "audioDirection": "soft wheel splash, birds, warm Armenian narrator", "spokenText": "Երբ կիսվում ենք, միասին ավելի լավ լուծումներ ենք գտնում։", "continuityFrom": "" }
   ],
   "semanticReview": {

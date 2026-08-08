@@ -75,6 +75,7 @@ export async function runStructuredCompilerStage<T>(input: {
         retryable: error.retryable,
         providerMessage: error.message.slice(0, 1_000),
       });
+      if (error.status === 503 && !error.retryable) throw error;
       throw new GoogleApiError(
         error.retryable
           ? `${input.stageLabel} is temporarily busy. Please try again.`

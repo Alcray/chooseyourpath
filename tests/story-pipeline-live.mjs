@@ -12,7 +12,7 @@ if (storyId) {
   const startResponse = await fetch(`${baseUrl}/api/stories`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ blueprintId, idempotencyKey }),
+    body: JSON.stringify({ blueprintId, idempotencyKey, sensitiveTopicAcknowledged: false }),
     signal: AbortSignal.timeout(60_000),
   });
   const startPayload = await startResponse.json();
@@ -24,7 +24,7 @@ if (storyId) {
   const duplicateResponse = await fetch(`${baseUrl}/api/stories`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ blueprintId, idempotencyKey }),
+    body: JSON.stringify({ blueprintId, idempotencyKey, sensitiveTopicAcknowledged: false }),
     signal: AbortSignal.timeout(10_000),
   });
   const duplicatePayload = await duplicateResponse.json();

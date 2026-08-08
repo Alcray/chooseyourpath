@@ -63,6 +63,15 @@ def validate(value: dict) -> None:
         fail("Premise IDs must be unique and the selected ID must exist.")
     if any(not isinstance(premise.get("storynessScore"), int) or premise["storynessScore"] < 60 for premise in premises):
         fail("Every golden premise must pass the storyness threshold.")
+    ranking = value.get("premiseSelection")
+    if not isinstance(ranking, dict) or ranking.get("selectedPremiseId") != value.get("selectedPremiseId"):
+        fail("An independent premise selection is required.")
+    evaluations = ranking.get("evaluations", [])
+    if len(evaluations) != 3 or {entry.get("premiseId") for entry in evaluations} != set(premise_ids):
+        fail("The independent ranking must evaluate every premise exactly once.")
+    outline = value.get("outline")
+    if not isinstance(outline, dict) or len(outline.get("setup", [])) < 4 or len(outline.get("harmfulArc", [])) < 4:
+        fail("A complete hierarchical outline is required.")
 
     canon = value.get("canon")
     graph = value.get("graph")
@@ -80,8 +89,54 @@ def validate(value: dict) -> None:
         fail("The story graph requires constructive and harmful choices.")
     branches = graph.get("branches", {})
     harmful_beats = branches.get("harmful", {}).get("beats", [])
-    if not any(beat.get("phase") == "repair" for beat in harmful_beats if isinstance(beat, dict)):
-        fail("The harmful branch requires a repair beat.")
+    consequence_index = next((index for index, beat in enumerate(harmful_beats) if beat.get("phase") == "consequence"), -1)
+    repair_index = next((index for index, beat in enumerate(harmful_beats) if beat.get("phase") == "repair"), -1)
+    if consequence_index < 0 or repair_index <= consequence_index:
+        fail("The harmful branch requires a consequence followed by repair.")
+
+    all_beats = [
+        *graph.get("commonPrefix", []),
+        *branches.get("constructive", {}).get("beats", []),
+        *harmful_beats,
+        *graph.get("convergence", {}).get("constructiveBridge", []),
+        *graph.get("convergence", {}).get("harmfulBridge", []),
+        *graph.get("convergence", {}).get("finale", []),
+    ]
+    if any(not beat.get("reads") or not beat.get("updates") for beat in all_beats):
+        fail("Every beat must declare nonempty state reads and updates.")
+    beat_ids = [beat.get("id") for beat in all_beats]
+    if len(set(beat_ids)) != len(beat_ids):
+        fail("Beat IDs must be unique across every path.")
+
+    setup_beats = [beat for beat in graph.get("commonPrefix", []) if beat.get("phase") == "setup"]
+    setup_payoffs = graph.get("setupPayoffs")
+    if not isinstance(setup_payoffs, list) or len(setup_payoffs) != len(setup_beats):
+        fail("Every setup beat needs one payoff mapping for both paths.")
+    setup_ids = {beat.get("id") for beat in setup_beats}
+    mapped_setup_ids = {mapping.get("setupBeatId") for mapping in setup_payoffs if isinstance(mapping, dict)}
+    constructive_payoff_ids = {
+        beat.get("id")
+        for beat in [
+            *branches.get("constructive", {}).get("beats", []),
+            *graph.get("convergence", {}).get("constructiveBridge", []),
+            *graph.get("convergence", {}).get("finale", []),
+        ]
+    }
+    harmful_payoff_ids = {
+        beat.get("id")
+        for beat in [
+            *harmful_beats,
+            *graph.get("convergence", {}).get("harmfulBridge", []),
+            *graph.get("convergence", {}).get("finale", []),
+        ]
+    }
+    if mapped_setup_ids != setup_ids or any(
+        mapping.get("constructivePayoffBeatId") not in constructive_payoff_ids
+        or mapping.get("harmfulPayoffBeatId") not in harmful_payoff_ids
+        for mapping in setup_payoffs
+        if isinstance(mapping, dict)
+    ):
+        fail("Every setup payoff mapping must reference real later beats on both paths.")
 
     if len(shots) != len(EXPECTED_SHOTS):
         fail("Exactly eight shot segments are required.")
@@ -104,6 +159,9 @@ def validate(value: dict) -> None:
             fail(f"Shot {index} invents a prop ID.")
         if len(shot.get("timedBeats", [])) != 3:
             fail(f"Shot {index} must contain exactly three timed beats.")
+        expected_previous = "" if expected[1] == 0 else shots[index - 2].get("id")
+        if shot.get("continuityFrom", "") != expected_previous:
+            fail(f"Shot {index} must reference its exact predecessor segment ID.")
         spoken_text = shot.get("spokenText", "")
         if not isinstance(spoken_text, str) or not spoken_text.strip():
             fail(f"Shot {index} needs spoken text.")

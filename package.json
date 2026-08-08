@@ -12,6 +12,7 @@
     "test": "npm run lint && npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs && tsx --test tests/story-compiler.test.ts",
     "test:planner-live": "tsx tests/google-planner-live.mjs",
     "test:route-live": "node tests/planner-route-live.mjs",
+    "test:approval-live": "tsx tests/story-approval-route-live.ts",
     "test:pipeline-live": "node tests/story-pipeline-live.mjs",
     "test:starts-live": "node tests/story-starts-live.mjs",
     "test:ui": "playwright test",

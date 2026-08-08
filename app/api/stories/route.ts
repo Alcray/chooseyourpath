@@ -11,13 +11,13 @@ import {
   baseClipDuration,
   type StoryBrief,
 } from "../../lib/story";
-import { validateStoryPackage } from "../../lib/story-compiler";
+import { approveStoryPackageForRender } from "../../lib/story-compiler";
 import { getStoryClips, requestOwnerId, storyPayload } from "../../lib/story-store";
 import { getVideoProvider } from "../../lib/video-provider";
 
 const BLUEPRINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-type StartBody = { blueprintId: string; idempotencyKey: string };
+type StartBody = { blueprintId: string; idempotencyKey: string; sensitiveTopicAcknowledged: boolean };
 
 function authenticatedOwnerId(request: Request) {
   try {
@@ -43,7 +43,15 @@ function validateBody(value: unknown): StartBody {
     throw new GoogleApiError("A valid request key is required.", 400);
   }
 
-  return { blueprintId: body.blueprintId, idempotencyKey: body.idempotencyKey };
+  if (typeof body.sensitiveTopicAcknowledged !== "boolean") {
+    throw new GoogleApiError("Confirm whether the blueprint contains a sensitive topic.", 400);
+  }
+
+  return {
+    blueprintId: body.blueprintId,
+    idempotencyKey: body.idempotencyKey,
+    sensitiveTopicAcknowledged: body.sensitiveTopicAcknowledged,
+  };
 }
 
 function boundedString(value: unknown, name: string, min: number, max: number) {
@@ -151,7 +159,10 @@ export async function POST(request: Request) {
       throw new GoogleApiError("The stored blueprint could not be read. Create a new blueprint.", 422);
     }
     const brief = validateStoredBrief(briefValue);
-    const plan = validateStoryPackage(planValue);
+    const plan = approveStoryPackageForRender(planValue, {
+      sensitiveTopicAcknowledged: body.sensitiveTopicAcknowledged,
+      reviewedAt: now,
+    });
     const videoProvider = getVideoProvider();
 
     const storyId = crypto.randomUUID();

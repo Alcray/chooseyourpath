@@ -10,7 +10,9 @@ import {
   getCharacterPair,
   getSetting,
   isStoryPackage,
+  type AdventurePremise,
   type ClipId,
+  type SemanticReview,
   type StoryBrief,
   type StoryPlan,
 } from "./lib/story";
@@ -58,6 +60,28 @@ const COMPILER_STAGES = [
   { label: "Story graph", detail: "Tracking characters, props, knowledge, and promises" },
   { label: "Independent review", detail: "Checking causality, pedagogy, safety, and convergence" },
   { label: "Shot manifest", detail: "Compiling eight bounded animation segments" },
+] as const;
+
+const PREMISE_FIELDS: ReadonlyArray<{ label: string; key: keyof AdventurePremise }> = [
+  { label: "External goal", key: "externalGoal" },
+  { label: "Meaningful relationship", key: "relationship" },
+  { label: "Escalating obstacle", key: "escalatingObstacle" },
+  { label: "Setup and payoff", key: "setupPayoff" },
+  { label: "Constructive effort", key: "constructiveEffort" },
+  { label: "Understandable temptation", key: "temptingAlternative" },
+  { label: "Natural consequence", key: "naturalConsequence" },
+] as const;
+
+const SEMANTIC_SCORE_FIELDS: ReadonlyArray<{ label: string; key: keyof SemanticReview }> = [
+  { label: "Story interest", key: "storyInterest" },
+  { label: "Causal continuity", key: "causalContinuity" },
+  { label: "Choice meaning", key: "choiceMeaning" },
+  { label: "Consequence proportion", key: "consequenceProportion" },
+  { label: "Repair quality", key: "repairQuality" },
+  { label: "Age fit", key: "ageFit" },
+  { label: "Moral clarity", key: "moralClarity" },
+  { label: "Child safety", key: "childSafety" },
+  { label: "Branch convergence", key: "convergence" },
 ] as const;
 
 const DEFAULT_BRIEF: StoryBrief = {
@@ -203,6 +227,7 @@ export function StoryStudio() {
   const [playbackNeedsGesture, setPlaybackNeedsGesture] = useState(false);
   const [seamlessTransition, setSeamlessTransition] = useState(false);
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<ClipId, string>>>({});
+  const [sensitiveTopicAcknowledged, setSensitiveTopicAcknowledged] = useState(false);
 
   const pollingRef = useRef(false);
   const pollingVersionRef = useRef(0);
@@ -331,7 +356,10 @@ export function StoryStudio() {
 
   function captionUrlFor(clipId: ClipId) {
     const clip = clipById.get(clipId);
-    const baseCaption = clip?.caption ?? clip?.summary ?? "Story narration";
+    const branchCaption = clipId === "ending" && chosenPath
+      ? clip?.branchNarration?.[chosenPath]
+      : undefined;
+    const baseCaption = branchCaption ?? clip?.caption ?? clip?.summary ?? "Story narration";
     const extensions = Array.isArray(clip?.extensions) ? clip.extensions : [];
     const cleanCaption = (caption: string) => caption
       .replace(/\r/g, "")
@@ -644,6 +672,7 @@ export function StoryStudio() {
       setJobs(emptyJobs());
       setPlayback("intro");
       setChosenPath(null);
+      setSensitiveTopicAcknowledged(false);
       setStage("blueprint");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The blueprint could not be created.");
@@ -736,10 +765,15 @@ export function StoryStudio() {
       const result = await apiRequest<{ story: ServerStory }>("/api/stories", {
         blueprintId: approvedBlueprintId,
         idempotencyKey: pendingStartKey(approvedBlueprintId),
+        sensitiveTopicAcknowledged:
+          planValue.moralSpec?.policyDecision === "REQUIRE_PARENT_REVIEW"
+            ? sensitiveTopicAcknowledged
+            : false,
       });
       applyServerStory(result.story);
+      setPlan(result.story.plan);
       const startedAt = result.story.createdAt ?? requestedAt;
-      await pollStory(result.story.id, planValue, briefValue, startedAt);
+      await pollStory(result.story.id, result.story.plan, briefValue, startedAt);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : "The video jobs could not be started.");
       setIsGenerating(false);
@@ -790,6 +824,7 @@ export function StoryStudio() {
     setIsGenerating(false);
     setGenerationStartedAt(null);
     setElapsedSeconds(0);
+    setSensitiveTopicAcknowledged(false);
     setStage("brief");
   }
 
@@ -959,12 +994,44 @@ export function StoryStudio() {
                     <dl>
                       <div><dt>External goal</dt><dd>{selectedPremise.externalGoal}</dd></div>
                       <div><dt>Why this framing</dt><dd>{compiledPackage.moralSpec.policyReason}</dd></div>
+                      {compiledPackage.moralSpec.policyDecision === "TRANSFORM" && <div><dt>Compiled lesson</dt><dd>{compiledPackage.moralSpec.compiledLesson}</dd></div>}
                     </dl>
                     <div className="compiler-metrics">
                       <span><strong>{selectedPremise.storynessScore}</strong> storyness</span>
                       <span><strong>{validationPassed}/{compiledPackage.validation.checks.length}</strong> checks passed</span>
                       <span><strong>{semanticAverage}%</strong> editor score</span>
                     </div>
+                    <details className="compiler-evidence" open>
+                      <summary>Review all compiler evidence</summary>
+                      <div className="premise-evidence">
+                        {compiledPackage.premiseCandidates.map((premise) => {
+                          const evaluation = compiledPackage.premiseSelection.evaluations.find((entry) => entry.premiseId === premise.id);
+                          return (
+                            <article className="premise-review-card" key={premise.id}>
+                              <div><strong>{premise.title}</strong><span>{premise.storynessScore}/100 · {evaluation?.passed ? "Passed" : "Needs revision"}</span></div>
+                              <p>{premise.logline}</p>
+                              <dl>
+                                {PREMISE_FIELDS.map((field) => (
+                                  <div key={field.key}><dt>{field.label}</dt><dd>{premise[field.key]}</dd></div>
+                                ))}
+                              </dl>
+                              <small>{evaluation?.reason}</small>
+                            </article>
+                          );
+                        })}
+                      </div>
+                      <section className="semantic-review" aria-labelledby="semantic-review-heading">
+                        <div><strong id="semantic-review-heading">Independent semantic review</strong><span>Each release score must be at least 3 of 5.</span></div>
+                        <dl>
+                          {SEMANTIC_SCORE_FIELDS.map((field) => (
+                            <div key={field.key}><dt>{field.label}</dt><dd>{String(compiledPackage.validation.semanticReview[field.key])} / 5</dd></div>
+                          ))}
+                        </dl>
+                      </section>
+                      <div className="check-evidence">
+                        {compiledPackage.validation.checks.map((entry) => <span key={entry.id}>✓ {entry.label}</span>)}
+                      </div>
+                    </details>
                   </article>
                 )}
                 <article className="choice-preview">
@@ -983,6 +1050,29 @@ export function StoryStudio() {
                     return <article key={clip.id}><span className={`clip-icon ${clip.id}`}>{meta.icon}</span><div><small>CLIP {meta.number}</small><h3>{clip.title}</h3><p>{clip.summary}</p></div><b>{clipDurationLabel(plan, clip.id)}</b></article>;
                   })}
                 </div>
+                {compiledPackage && (
+                  <article className="shot-storyboard" aria-labelledby="shot-storyboard-heading">
+                    <div><span className="card-label">Shot manifest</span><h2 id="shot-storyboard-heading">Eight-shot storyboard</h2></div>
+                    <p>Review every bounded animation segment before video credits are used.</p>
+                    <ol>
+                      {compiledPackage.shots.map((shot, index) => (
+                        <li data-testid="storyboard-shot" key={shot.id}>
+                          <span>{String(index + 1).padStart(2, "0")}</span>
+                          <div>
+                            <small>{CLIP_META[shot.clipId].label} · segment {shot.segmentIndex + 1} · {shot.durationSeconds}s</small>
+                            <strong>{shot.spokenText}</strong>
+                            <p>{shot.timedBeats.join(" ")}</p>
+                            <dl>
+                              <div><dt>Emotion</dt><dd>{shot.emotion}</dd></div>
+                              <div><dt>Camera</dt><dd>{shot.camera}</dd></div>
+                              <div><dt>Canon</dt><dd>{[...shot.characterIds, shot.locationId, ...shot.propIds].join(" · ")}</dd></div>
+                            </dl>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </article>
+                )}
                 {compiledPackage && (
                   <article className="branch-graph-preview">
                     <div><span className="card-label">Validated branch graph</span><strong>Both paths rejoin safely</strong></div>
@@ -1006,8 +1096,24 @@ export function StoryStudio() {
                 </dl>
                 <div className="lock-list"><span>✓ Same character design</span><span>✓ Same wardrobe + props</span><span>✓ Same world + lighting</span><span>✓ Same narrator voice</span></div>
                 <div className="render-notice"><strong>{compiledPackage ? "Compiler-approved for rendering" : "Ready to render 4 final clips"}</strong><span>{compiledPackage ? "The parent lesson never goes directly to video. This approved graph was compiled into 8 canon-locked segments, assembled as 4 final clips: 8s, 20s, 20s, and 8s." : "Opening and ending are 8 seconds. Each choice path is extended to 20 seconds at 720p with native audio. This may take several minutes and uses video-generation quota."}</span></div>
+                {compiledPackage?.moralSpec.policyDecision === "REQUIRE_PARENT_REVIEW" && (
+                  <div className="sensitive-review-confirmation">
+                    <input
+                      id="sensitive-topic-review"
+                      type="checkbox"
+                      checked={sensitiveTopicAcknowledged}
+                      onChange={(event) => setSensitiveTopicAcknowledged(event.target.checked)}
+                    />
+                    <label htmlFor="sensitive-topic-review"><strong>I reviewed this sensitive topic</strong><small>I approve the premise, both consequences, repair, and the child-facing wording before video credits are used.</small></label>
+                  </div>
+                )}
                 {error && <p className="form-error" role="alert">{error}</p>}
-                <button className="main-action" disabled={!blueprintId} type="button" onClick={() => blueprintId && void startGeneration(plan, brief, blueprintId)}>
+                <button
+                  className="main-action"
+                  disabled={!blueprintId || (compiledPackage?.moralSpec.policyDecision === "REQUIRE_PARENT_REVIEW" && !sensitiveTopicAcknowledged)}
+                  type="button"
+                  onClick={() => blueprintId && void startGeneration(plan, brief, blueprintId)}
+                >
                   Generate all four clips <span>→</span>
                 </button>
               </aside>
@@ -1036,10 +1142,10 @@ export function StoryStudio() {
                 aria-valuemax={totalGenerationUnits}
                 aria-valuetext={`${finishedGenerationUnits} of ${totalGenerationUnits} generation stages complete`}
               >
-                <i style={{ width: `${generationProgressPercent}%` }} />
+                <i data-testid="generation-progress-fill" style={{ width: `${generationProgressPercent}%` }} />
               </div>
               <p className="generation-units"><strong>{finishedGenerationUnits} of {totalGenerationUnits}</strong> generation stages complete</p>
-              <div className="progress-track" role="progressbar" aria-label="Video clips ready" aria-valuenow={readyCount} aria-valuemin={0} aria-valuemax={4}>
+              <div className="progress-track" role="progressbar" aria-label="Video clips ready" aria-valuenow={readyCount} aria-valuemin={0} aria-valuemax={4} aria-valuetext={`${readyCount} of 4 clips ready`}>
                 {CLIP_IDS.map((id) => {
                   const job = jobs[id];
                   const meta = CLIP_META[id];
@@ -1119,6 +1225,7 @@ export function StoryStudio() {
                       preload="auto"
                       controls={controlsActive}
                       playsInline
+                      aria-label={controlsActive ? `Now playing ${CLIP_META[clipId].label}: ${clipById.get(clipId)?.title ?? CLIP_META[clipId].label}` : undefined}
                       aria-hidden={!controlsActive}
                       tabIndex={controlsActive ? 0 : -1}
                       onLoadedMetadata={() => updateClipBuffer(clipId)}
@@ -1131,6 +1238,7 @@ export function StoryStudio() {
                       onEnded={() => handleClipEnded(clipId)}
                     >
                       <track
+                        key={`${clipId}-${clipId === "ending" ? chosenPath ?? "none" : "fixed"}`}
                         default
                         kind="captions"
                         src={captionUrlFor(clipId)}
@@ -1155,6 +1263,7 @@ export function StoryStudio() {
                       <i style={{ width: `${(bufferedClips.length / CLIP_IDS.length) * 100}%` }} />
                     </div>
                     <p>{!preStartTransitionPaused && !failedMediaClip ? playbackBufferReady ? "All four paths are ready. Begin when your child understands the setup." : `The opening is ready while paths ${bufferedClips.length} of ${CLIP_IDS.length} prepare in the background.` : "We’re preparing every path now so your child’s choice can continue smoothly."}</p>
+                    {!preStartTransitionPaused && !failedMediaClip && <small>This AI-generated story was reviewed and started by your parent.</small>}
                     {preStartTransitionPaused && <button ref={recoveryActionRef} type="button" onClick={continuePlayback}>Reconnect and start ↻</button>}
                     {!preStartTransitionPaused && failedMediaClip && <button type="button" onClick={() => retryFailedMedia(failedMediaClip)}>Retry scene ↻</button>}
                     {!preStartTransitionPaused && !failedMediaClip && playbackStartAvailable && <button type="button" onClick={startPlayback}>Start story ▶</button>}
@@ -1171,6 +1280,13 @@ export function StoryStudio() {
                 {playbackStarted && pendingClipId && !playbackNeedsGesture && !seamlessTransition && (
                   <div className="scene-transition-status" role="status">Joining the next scene…</div>
                 )}
+                {playback === "ending" && chosenPath && compiledPackage?.graph.convergence.narrationByBranch && (
+                  <div className="finale-narration" aria-live="polite">
+                    {chosenPath === "positive"
+                      ? compiledPackage.graph.convergence.narrationByBranch.constructive
+                      : compiledPackage.graph.convergence.narrationByBranch.harmful}
+                  </div>
+                )}
                 {playback === "choice" && (
                   <div className="decision-overlay" role="dialog" aria-labelledby="story-choice-title">
                     <span>YOUR CHOICE</span>
@@ -1182,7 +1298,7 @@ export function StoryStudio() {
                   </div>
                 )}
                 {playback === "complete" && (
-                  <div className="completion-overlay" role="dialog" aria-labelledby="story-complete-title"><span>✓</span><h2 id="story-complete-title">Story complete</h2><p>The choice changed the middle. The lesson still reached a warm ending.</p><button ref={completionActionRef} type="button" onClick={restartPlayback}>Try the other path ↻</button></div>
+                  <div className="completion-overlay" role="dialog" aria-labelledby="story-complete-title" aria-describedby="story-reflection-prompt"><span>✓</span><h2 id="story-complete-title">Story complete</h2><p id="story-reflection-prompt">{compiledPackage?.graph.reflectionPrompt ?? "The choice changed the middle. What did the characters feel, and why?"}</p><button ref={completionActionRef} type="button" onClick={restartPlayback}>Try the other path ↻</button></div>
                 )}
               </div>
 

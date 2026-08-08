@@ -103,6 +103,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(compilerModel, /gemini-3\.5-flash-lite/);
   assert.match(structuredGemini, /responseMimeType: "application\/json"/);
   assert.match(structuredGemini, /responseJsonSchema/);
+  assert.doesNotMatch(structuredGemini, /responseSchema:/);
   assert.match(structuredGemini, /AbortSignal\.timeout\(45_000\)/);
   assert.match(compilerConfig, /moralSpecSchema/);
   assert.match(compilerConfig, /premiseCandidatesSchema/);
@@ -114,14 +115,20 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(storyCompiler, /deterministicGraphChecks/);
   assert.match(storyCompiler, /validateStoryPackage/);
   assert.match(storyCompiler, /assertChildSafePackage/);
-  assert.match(storyCompiler, /Veo continuation only/);
+  assert.match(storyCompiler, /Provider continuation/);
   assert.match(plannerRoute, /runStructuredCompilerStage/);
   assert.match(plannerRoute, /Adventure premise selection/);
+  assert.match(plannerRoute, /Independent premise ranking/);
   assert.match(plannerRoute, /Independent story review/);
   assert.match(plannerRoute, /Shot manifest compilation/);
   assert.match(plannerRoute, /assembleStoryPackage/);
   assert.doesNotMatch(plannerRoute, /DeepSeek|OpenRouter|deepseek|openRouterJson/);
-  assert.match(storyRoute, /validateStoryPackage/);
+  assert.match(storyRoute, /approveStoryPackageForRender/);
+  assert.match(storyRoute, /sensitiveTopicAcknowledged/);
+  assert.ok(
+    storyRoute.indexOf("approveStoryPackageForRender(planValue") < storyRoute.indexOf("const videoProvider = getVideoProvider()"),
+    "parent approval must be validated before a video provider can start",
+  );
   assert.match(storyRoute, /getVideoProvider/);
   assert.doesNotMatch(storyRoute, /startVeoClip/);
   assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);

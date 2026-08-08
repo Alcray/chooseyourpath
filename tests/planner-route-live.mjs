@@ -43,11 +43,19 @@ const response = await postPlan({
 const payload = await response.json();
 assert.equal(response.status, 200, `Planner route failed: ${payload?.error ?? "unknown error"}`);
 assert.match(payload.blueprintId, /^[0-9a-f-]{36}$/i);
-assert.equal(payload.plan.compiler.schemaVersion, "1.0");
+assert.equal(payload.plan.compiler.schemaVersion, "1.1");
 assert.equal(payload.plan.compiler.model, "gemini-3.5-flash-lite");
 assert.equal(payload.plan.moralSpec.policyDecision, "ALLOW");
 assert.equal(payload.plan.premiseCandidates.length, 3);
 assert.ok(payload.plan.premiseCandidates.every((premise) => premise.storynessScore >= 60));
+assert.equal(payload.plan.premiseSelection.evaluations.length, 3);
+assert.equal(payload.plan.premiseSelection.selectedPremiseId, payload.plan.selectedPremiseId);
+assert.ok(payload.plan.outline.setup.length >= 4);
+assert.equal(
+  payload.plan.graph.setupPayoffs.length,
+  payload.plan.graph.commonPrefix.filter((beat) => beat.phase === "setup").length,
+);
+assert.equal(payload.plan.parentReview.status, "pending");
 assert.equal(payload.plan.shots.length, 8);
 assert.equal(payload.plan.validation.valid, true);
 assert.equal(payload.plan.validation.semanticReview.approved, true);

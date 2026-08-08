@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import compiledFixture from "../fixtures/compiled-story-input.json" with { type: "json" };
 
-const sourceStoryId = process.env.TEST_MEDIA_STORY_ID ?? "";
+const sourceStoryId = process.env.TEST_MEDIA_STORY_ID ?? "33333333-3333-4333-8333-333333333333";
 
 test("creates, tracks, and plays both branches without replacing video elements", async ({ page }) => {
   expect(sourceStoryId).toMatch(/^[0-9a-f-]{36}$/i);
@@ -18,6 +18,12 @@ test("creates, tracks, and plays both branches without replacing video elements"
         prompt: "Canon-locked extension prompt. ".repeat(20),
         caption: shot.spokenText,
       })),
+      ...(id === "ending" ? {
+        branchNarration: {
+          positive: compiledFixture.graph.convergence.narrationByBranch.constructive,
+          negative: compiledFixture.graph.convergence.narrationByBranch.harmful,
+        },
+      } : {}),
     };
   });
   const plan = {
@@ -36,18 +42,25 @@ test("creates, tracks, and plays both branches without replacing video elements"
     continuitySeed: compiledFixture.continuitySeed,
     clips,
     compiler: {
-      schemaVersion: "1.0" as const,
-      promptVersion: "branching-compiler-v1" as const,
+      schemaVersion: "1.1" as const,
+      promptVersion: "branching-compiler-v2" as const,
       model: "gemini-3.5-flash-lite",
       compiledAt: Date.now(),
-      stages: ["policy", "premises", "story_graph", "independent_review", "shot_manifest"].map((id) => ({ id, status: "passed" as const })),
+      stages: ["policy", "premises", "premise_rank", "outline", "story_graph", "independent_review", "shot_manifest"].map((id) => ({ id, status: "passed" as const })),
     },
-    moralSpec: compiledFixture.moralSpec,
+    moralSpec: {
+      ...compiledFixture.moralSpec,
+      policyDecision: "REQUIRE_PARENT_REVIEW" as const,
+      policyReason: "This sensitive topic requires explicit parent review before rendering.",
+    },
     premiseCandidates: compiledFixture.premiseCandidates,
+    premiseSelection: compiledFixture.premiseSelection,
     selectedPremiseId: compiledFixture.selectedPremiseId,
+    outline: compiledFixture.outline,
     canon: compiledFixture.canon,
     graph: compiledFixture.graph,
     shots: compiledFixture.shots,
+    parentReview: { status: "pending" as const, reviewedAt: null, sensitiveTopicAcknowledged: false },
     validation: {
       valid: true,
       checks: Array.from({ length: 15 }, (_, index) => ({ id: `check_${index}`, label: `Check ${index}`, passed: true, detail: "Golden fixture passed." })),
@@ -61,13 +74,27 @@ test("creates, tracks, and plays both branches without replacing video elements"
     ageBand: "6-8",
     language: "Armenian",
   };
+  const approvedPlan = {
+    ...plan,
+    parentReview: { status: "approved" as const, reviewedAt: Date.now(), sensitiveTopicAcknowledged: true },
+  };
   const uiStoryId = "11111111-1111-4111-8111-111111111111";
   let statusRequests = 0;
 
   await page.addInitScript(() => {
+    const mediaPositions = new WeakMap<HTMLMediaElement, number>();
     window.addEventListener("error", (event) => {
       if (event.target instanceof HTMLMediaElement) event.stopImmediatePropagation();
     }, true);
+    Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
+      configurable: true,
+      get() {
+        return mediaPositions.get(this) ?? 0;
+      },
+      set(value: number) {
+        mediaPositions.set(this, value);
+      },
+    });
     Object.defineProperty(HTMLMediaElement.prototype, "play", {
       configurable: true,
       value: function play() {
@@ -108,9 +135,10 @@ test("creates, tracks, and plays both branches without replacing video elements"
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ story: null }) });
       return;
     }
-    const requestBody = route.request().postDataJSON() as { blueprintId: string; idempotencyKey: string };
+    const requestBody = route.request().postDataJSON() as { blueprintId: string; idempotencyKey: string; sensitiveTopicAcknowledged: boolean };
     expect(requestBody.blueprintId).toBe("22222222-2222-4222-8222-222222222222");
     expect(requestBody.idempotencyKey.length).toBeGreaterThanOrEqual(8);
+    expect(requestBody.sensitiveTopicAcknowledged).toBe(true);
     await route.fulfill({
       status: 202,
       contentType: "application/json",
@@ -119,7 +147,7 @@ test("creates, tracks, and plays both branches without replacing video elements"
           id: uiStoryId,
           status: "rendering",
           createdAt: Date.now(),
-          plan,
+          plan: approvedPlan,
           brief,
           clips: plan.clips.map((clip) => ({
             slot: clip.id,
@@ -158,7 +186,7 @@ test("creates, tracks, and plays both branches without replacing video elements"
           id: uiStoryId,
           status: ready ? "ready" : "rendering",
           createdAt: Date.now(),
-          plan,
+          plan: approvedPlan,
           brief,
           clips: plan.clips.map((clip) => {
             const [status, extensionCount] = states[clip.id as keyof typeof states];
@@ -172,6 +200,14 @@ test("creates, tracks, and plays both branches without replacing video elements"
           }),
         },
       }),
+    });
+  });
+
+  await page.route(`**/api/stories/${sourceStoryId}/clips/*`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "video/mp4",
+      path: `${process.cwd()}/public/sharing-is-caring-armenian-final.mp4`,
     });
   });
 
@@ -189,15 +225,35 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await expect(page.getByRole("heading", { name: plan.title, level: 1 })).toBeVisible();
   await expect(page.getByText("Selected adventure premise")).toBeVisible();
   await expect(page.getByRole("heading", { name: "The Garden Waterwheel", level: 2 })).toBeVisible();
-  await expect(page.getByText("ALLOW", { exact: true })).toBeVisible();
+  await expect(page.getByText("REQUIRE PARENT REVIEW", { exact: true })).toBeVisible();
   await expect(page.getByText("15/15", { exact: false })).toBeVisible();
   await expect(page.getByText("Both paths rejoin safely")).toBeVisible();
   await expect(page.getByText("compiled into 8 canon-locked segments", { exact: false })).toBeVisible();
+  const premiseCards = page.locator(".premise-review-card");
+  await expect(premiseCards).toHaveCount(3);
+  for (const label of ["External goal", "Meaningful relationship", "Escalating obstacle", "Setup and payoff", "Constructive effort", "Understandable temptation", "Natural consequence"]) {
+    await expect(premiseCards.locator("dt", { hasText: label })).toHaveCount(3);
+  }
+  await expect(page.getByText("Independent semantic review", { exact: true })).toBeVisible();
+  await expect(page.locator(".semantic-review dl > div")).toHaveCount(9);
+  for (const label of ["Story interest", "Causal continuity", "Choice meaning", "Consequence proportion", "Repair quality", "Age fit", "Moral clarity", "Child safety", "Branch convergence"]) {
+    await expect(page.locator(".semantic-review dt", { hasText: label })).toHaveCount(1);
+  }
+  await expect(page.getByRole("heading", { name: "Eight-shot storyboard" })).toBeVisible();
+  await expect(page.getByTestId("storyboard-shot")).toHaveCount(8);
   await page.screenshot({ path: "/tmp/kindpath-compiler-approval-e2e.png", fullPage: true });
-  await page.getByRole("button", { name: /Generate all four clips/ }).click();
+  const generateButton = page.getByRole("button", { name: /Generate all four clips/ });
+  await expect(generateButton).toBeDisabled();
+  await page.getByLabel("I reviewed this sensitive topic").check();
+  await expect(generateButton).toBeEnabled();
+  await generateButton.click();
 
   const stageProgress = page.getByRole("progressbar", { name: "Generation stages completed" });
   await expect(stageProgress).toHaveAttribute("aria-valuemax", "8");
+  await expect(stageProgress).toHaveAttribute("aria-valuenow", "5");
+  await expect(stageProgress).toHaveAttribute("aria-valuetext", "5 of 8 generation stages complete");
+  await expect(page.getByTestId("generation-progress-fill")).toHaveAttribute("style", /width: 63%/);
+  await expect(page.getByRole("progressbar", { name: "Video clips ready" })).toHaveAttribute("aria-valuetext", "2 of 4 clips ready");
   await expect(page.getByText("2 of 4 clips ready")).toBeVisible();
   await expect(page.getByText("Extending the consequence · step 2 of 3").first()).toBeVisible();
 
@@ -211,40 +267,64 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await expect(page.locator(".playback-route span.active")).toHaveText("00");
   await page.screenshot({ path: "/tmp/kindpath-narrator-e2e.png", fullPage: true });
 
-  async function pauseAndResumeVisibleClip() {
+  async function pauseAndResumeSimulatedVisibleClip() {
     const visibleVideo = page.locator("video.visible");
+    await expect(visibleVideo).toHaveAttribute("aria-label", /Now playing/);
+    expect(await visibleVideo.evaluate((element) => (element as HTMLVideoElement).controls)).toBe(true);
     await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "true");
-    await visibleVideo.evaluate((element) => (element as HTMLVideoElement).pause());
+    const nodeIdentity = await visibleVideo.getAttribute("data-e2e-node");
+    await visibleVideo.evaluate((element) => {
+      const video = element as HTMLVideoElement;
+      video.currentTime = 2.75;
+      video.pause();
+    });
     await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "false");
+    expect(await visibleVideo.evaluate((element) => (element as HTMLVideoElement).currentTime)).toBe(2.75);
     await visibleVideo.evaluate((element) => (element as HTMLVideoElement).play());
     await page.waitForTimeout(50);
     await expect(visibleVideo).toHaveAttribute("data-e2e-playing", "true");
+    await expect(visibleVideo).toHaveAttribute("data-e2e-node", nodeIdentity ?? "");
+    expect(await visibleVideo.evaluate((element) => (element as HTMLVideoElement).currentTime)).toBe(2.75);
+  }
+
+  async function expectActiveWebVttCaption(expectedCaption: string) {
+    const source = await page.locator("video.visible track").getAttribute("src");
+    expect(source).toMatch(/^data:text\/vtt;charset=utf-8,/);
+    const encodedBody = source?.slice(source.indexOf(",") + 1) ?? "";
+    expect(decodeURIComponent(encodedBody)).toContain(expectedCaption);
   }
 
   await page.getByRole("button", { name: /Start story/ }).click();
   await expect(page.getByText("Now playing")).toBeVisible();
   await expect(page.locator(".playback-route span.active")).toHaveText("01");
-  await pauseAndResumeVisibleClip();
+  await pauseAndResumeSimulatedVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator(".decision-overlay")).toBeVisible();
 
   await page.getByRole("button", { name: plan.positiveChoice.label }).click();
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/positive$"));
-  await pauseAndResumeVisibleClip();
+  await pauseAndResumeSimulatedVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/ending$"));
-  await pauseAndResumeVisibleClip();
+  await expect(page.getByText(compiledFixture.graph.convergence.narrationByBranch.constructive)).toBeVisible();
+  await expectActiveWebVttCaption(compiledFixture.graph.convergence.narrationByBranch.constructive);
+  await pauseAndResumeSimulatedVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
-  await expect(page.getByRole("dialog", { name: "Story complete" })).toBeVisible();
+  const completionDialog = page.getByRole("dialog", { name: "Story complete" });
+  await expect(completionDialog).toBeVisible();
+  await expect(completionDialog).toHaveAttribute("aria-describedby", "story-reflection-prompt");
+  await expect(page.getByText(compiledFixture.graph.reflectionPrompt)).toBeVisible();
 
   await page.getByRole("button", { name: /Try the other path/ }).click();
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/opening$"));
   await page.locator("video.visible").dispatchEvent("ended");
   await page.getByRole("button", { name: plan.negativeChoice.label }).click();
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/negative$"));
-  await pauseAndResumeVisibleClip();
+  await pauseAndResumeSimulatedVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator("video.visible")).toHaveAttribute("src", new RegExp("/ending$"));
+  await expect(page.getByText(compiledFixture.graph.convergence.narrationByBranch.harmful)).toBeVisible();
+  await expectActiveWebVttCaption(compiledFixture.graph.convergence.narrationByBranch.harmful);
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.getByRole("dialog", { name: "Story complete" })).toBeVisible();
 

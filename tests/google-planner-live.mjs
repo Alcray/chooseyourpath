@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { buildMoralPrompt, moralSpecSchema } from "../app/lib/compiler-config.ts";
 import { GEMINI_COMPILER_ENDPOINT } from "../app/lib/gemini-structured.ts";
+import { validateMoralDraft } from "../app/lib/story-compiler.ts";
 
 const apiKey = process.env.GOOGLE_API_KEY?.trim();
 assert.ok(apiKey, "GOOGLE_API_KEY is required for the live compiler integration test");
@@ -71,6 +72,13 @@ function validateSchema(value, schema, path = "moralSpec") {
 }
 
 validateSchema(moralSpec, moralSpecSchema);
+validateMoralDraft(moralSpec, {
+  sourceLesson: "Sharing helps friends solve problems together.",
+  compiledLesson: "Sharing helps friends solve problems together.",
+  ageBand: "6-8",
+  policyDecision: "ALLOW",
+  policyReason: "The lesson can use gentle choices and natural consequences.",
+});
 assert.ok(moralSpec.forbiddenTreatments.length >= 3);
 assert.ok(moralSpec.repairAction.length >= 4);
 

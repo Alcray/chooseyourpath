@@ -18,7 +18,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
 
     let plan;
     try {
-      plan = validateStoryPackage(JSON.parse(story.planJson));
+      plan = validateStoryPackage(JSON.parse(story.planJson), { requireParentApproval: true });
     } catch {
       throw new GoogleApiError("The stored story blueprint could not be read.", 422);
     }

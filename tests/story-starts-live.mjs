@@ -11,7 +11,7 @@ async function startStory(idempotencyKey) {
   const response = await fetch(`${baseUrl}/api/stories`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ blueprintId, idempotencyKey }),
+    body: JSON.stringify({ blueprintId, idempotencyKey, sensitiveTopicAcknowledged: false }),
     signal: AbortSignal.timeout(15_000),
   });
   const payload = await response.json();

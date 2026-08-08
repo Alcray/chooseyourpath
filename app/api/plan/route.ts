@@ -17,11 +17,13 @@ import { runStructuredCompilerStage } from "../../lib/gemini-structured";
 import {
   buildMoralPrompt,
   buildPremisePrompt,
+  buildPremiseRankingPrompt,
   buildReviewPrompt,
   buildShotManifestPrompt,
   buildStoryGraphPrompt,
   moralSpecSchema,
   premiseCandidatesSchema,
+  premiseRankingSchema,
   semanticReviewSchema,
   shotManifestSchema,
   storyGraphBeatsSchema,
@@ -34,6 +36,7 @@ import {
   validateGraphDraft,
   validateMoralDraft,
   validatePremiseDraft,
+  validatePremiseRanking,
   validateSemanticReview,
   validateShotDraft,
 } from "../../lib/story-compiler";
@@ -115,7 +118,23 @@ export async function POST(request: Request) {
       responseJsonSchema: premiseCandidatesSchema,
       maxOutputTokens: 6144,
     });
-    const premises = validatePremiseDraft(premiseDraft);
+    const generatedPremises = validatePremiseDraft(premiseDraft);
+    const rankingDraft = await runStructuredCompilerStage<unknown>({
+      stageLabel: "Independent premise ranking",
+      systemInstruction: "You are an independent children's adventure premise judge. You did not write the candidates. Apply the seven-part storyness contract strictly and ignore the writer's self-scores.",
+      prompt: buildPremiseRankingPrompt({
+        moralSpec,
+        candidates: generatedPremises.candidates,
+        ageGuidance: age.guidance,
+      }),
+      responseJsonSchema: premiseRankingSchema,
+      maxOutputTokens: 4_096,
+    });
+    const rankedPremises = validatePremiseRanking(rankingDraft, generatedPremises.candidates);
+    const premises = {
+      candidates: rankedPremises.candidates,
+      selectedPremiseId: rankedPremises.selection.selectedPremiseId,
+    };
     const selectedPremise = premises.candidates.find((candidate) => candidate.id === premises.selectedPremiseId)!;
     const canonBase = {
       characterIds: [...pair.characterIds],
@@ -141,7 +160,7 @@ export async function POST(request: Request) {
         });
         const metaDraft = await runStructuredCompilerStage<unknown>({
           stageLabel: attempt === 0 ? "Hierarchical story outline" : "Story outline revision",
-          systemInstruction: "You are a hierarchical children's story writer. Return only story metadata, registered props, the binary choice, branch-aware finale narration, and reflection requested by the schema. Prop ownerId must be a locked character ID or none. The moral controls the choice, not the external plot.",
+          systemInstruction: "You are a hierarchical children's story writer. Return the complete act-level outline plus story metadata, registered props, the binary choice, branch-aware finale narration, and reflection requested by the schema. Prop ownerId must be a locked character ID or none. The moral controls the choice, not the external plot.",
           prompt: graphPrompt,
           responseJsonSchema: storyGraphMetaSchema,
           maxOutputTokens: 4_096,
@@ -152,14 +171,14 @@ export async function POST(request: Request) {
         const [beatsDraft, statesDraft] = await Promise.all([
           runStructuredCompilerStage<unknown>({
             stageLabel: "Causal branch beats",
-            systemInstruction: "Return only the ordered flat beats requested by the schema. Use every path: common 4–8 beats, constructive 3–6, harmful 3–6, constructive_bridge 1–3, harmful_bridge 1–3, and finale 1–3. Orders begin at one within each path. The common path escalates before the choice; the harmful path has a gentle consequence and repair; every summary visibly follows from the previous beat.",
+            systemInstruction: "Return only the ordered flat beats and setup-to-payoff links requested by the schema. Use every path: common 4–8 beats, constructive 3–6, harmful 3–6, constructive_bridge 1–3, harmful_bridge 1–3, and finale 1–3. Orders begin at one within each path. The common path escalates before the choice; the harmful path has a gentle consequence before repair; every summary visibly follows from the previous beat. Every beat must declare nonempty reads and updates using only the typed state-fact key syntax in the prompt. Map every setup-phase beat to an existing later payoff beat on each branch.",
             prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}`,
             responseJsonSchema: storyGraphBeatsSchema,
             maxOutputTokens: 8_192,
           }),
           runStructuredCompilerStage<unknown>({
             stageLabel: "Typed story states",
-            systemInstruction: "Return exactly four typed states with unique roles initial, constructive_end, harmful_end, and finale_required. Use only the locked character, location, and registered prop IDs. Both branch end states must satisfy every finale_required time, location, character, prop condition, holder, and unresolved-promise field. knowledgeSummary states what the characters understand at that point.",
+            systemInstruction: "Return exactly four typed states with unique roles initial, constructive_end, harmful_end, and finale_required. Use only the locked character, location, and registered prop IDs. Every state must track every registered prop and separate facts for every locked character, plus explicit relationship state. Unresolved promises are unique snake_case fact IDs, never prose. The initial state's prop condition and holder must exactly match the registered canon. Both branch end states must independently satisfy every finale_required time, location, character, prop condition, holder, required knowledge, relationship, and unresolved-promise field. The compiler will reject mismatches and will never rewrite an end state.",
             prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}`,
             responseJsonSchema: storyGraphStatesSchema,
             maxOutputTokens: 4_096,
@@ -184,7 +203,7 @@ export async function POST(request: Request) {
       const reviewDraft = await runStructuredCompilerStage<unknown>({
         stageLabel: "Independent story review",
         systemInstruction: "You are an independent children's story safety and narrative judge. You did not write this story. Score it strictly and reject shame, fear, stereotypes, preaching, broken causality, or artificial convergence.",
-        prompt: buildReviewPrompt({ moralSpec, graph: graphResult.graph, ageBand: age.label }),
+        prompt: buildReviewPrompt({ moralSpec, outline: graphResult.outline, graph: graphResult.graph, ageBand: age.label }),
         responseJsonSchema: semanticReviewSchema,
         maxOutputTokens: 4096,
       });
@@ -224,7 +243,9 @@ export async function POST(request: Request) {
     const storyPackage = assembleStoryPackage({
       moralSpec,
       premiseCandidates: premises.candidates,
+      premiseSelection: rankedPremises.selection,
       selectedPremiseId: premises.selectedPremiseId,
+      outline: graphResult.outline,
       title: graphResult.title,
       parentSummary: graphResult.parentSummary,
       childIntro: graphResult.childIntro,

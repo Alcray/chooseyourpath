@@ -1,100 +1,49 @@
-# vinext-starter
+# KindPath Story Studio
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+KindPath is a parent-facing branching children's-story compiler. A parent supplies a lesson, recurring characters, world, age band, and language. The application compiles that input through policy, three adventure premises, independent premise ranking, a hierarchical outline, a typed two-branch story graph, independent review, and an eight-segment shot manifest before video quota can be used.
 
-## Prerequisites
+Read these files before changing compiler, rendering, safety, or playback behavior:
 
-- Node.js `>=22.13.0`
+- [`docs/branching-story-compiler-spec.md`](docs/branching-story-compiler-spec.md) — exact canonical architecture supplied by the user.
+- [`docs/branching-story-compiler-compliance.md`](docs/branching-story-compiler-compliance.md) — current evidence-backed implementation status and release gaps.
+- [`.agents/skills/moral-story-engine/SKILL.md`](.agents/skills/moral-story-engine/SKILL.md) — required engineering workflow and validators.
 
-## Quick Start
+## Local development
+
+Requires Node.js 22.13 or later.
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+The local runtime needs `GOOGLE_API_KEY` for Gemini/Veo and `GOOGLE_CLOUD_PROJECT_NUMBER` for Veo. Keep credentials in ignored local/runtime configuration and never commit them.
 
-## Included Shape
+## Verification
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+sha256sum --check docs/branching-story-compiler-spec.sha256
+npm test
+.agents/skills/moral-story-engine/scripts/run_story_evals.sh
+npm run test:ui
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+The local approval-boundary test uses local D1 and no provider quota:
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+```bash
+npm run test:approval-live
+```
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+Provider live tests are opt-in because they may use quota:
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+```bash
+npm run test:planner-live
+npm run test:route-live
+npm run test:pipeline-live
+```
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+Do not deploy model, schema, provider, or prompt changes until the static suite, compiler evaluations, live Gemini route, parent approval UI, progress states, both playback branches, pause/resume, shared ending, and applicable real-video checks have passed.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Persistence
 
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+Cloudflare D1 stores owner-scoped blueprints, versioned `StoryPackage` records, jobs, and status. R2 stores generated media. Logical bindings are declared in [`.openai/hosting.json`](.openai/hosting.json).
