@@ -70,6 +70,8 @@ function validateSchema(value, schema, path = "plan") {
 
 validateSchema(plan, plannerResponseJsonSchema);
 assert.deepEqual(plan.clips.map((clip) => clip.id), ["opening", "positive", "negative", "ending"]);
+assert.ok(plan.childIntro.length >= 10 && plan.childIntro.length <= 500, "narrator setup length is invalid");
+assert.doesNotMatch(plan.childIntro, /today we will see|այսօր մենք կտեսնենք/iu, "narrator setup must describe the immediate situation");
 for (const clip of plan.clips) {
   assert.ok(clip.prompt.length >= 500 && clip.prompt.length <= 1800, `${clip.id} prompt length is invalid`);
   assert.ok(clip.caption.length >= 1 && clip.caption.length <= 350, `${clip.id} caption length is invalid`);

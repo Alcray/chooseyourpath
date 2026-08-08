@@ -97,6 +97,8 @@ Continuity: the same two characters, clothing, proportions, color palette, locat
 AUDIENCE: ${context.ageLabel}; ${context.ageGuidance}.
 CHILD-FACING LANGUAGE: ${context.targetLanguage}. All dialogue, narration, the question, title, and choice labels must be in ${context.targetLanguage}. Write parentSummary and each clip summary in English.
 
+The childIntro field is the narrator's concrete pre-story setup. Write one or two short present-tense sentences in ${context.targetLanguage} that describe what the characters are doing immediately before the opening clip and the new arrival, problem, or emotional cue that changes the moment. For example: two animals are playing together; then a rabbit approaches and looks lost. Adapt the facts to the selected characters and story. Do not greet the audience, say "today we will see," reveal the moral, mention a choice, or summarize the future plot. The opening clip must begin directly from the situation childIntro establishes.
+
 Build exactly four final clips with this duration and extension structure:
 1. opening — one fresh 8-second prompt and extensions: []. Establish context and end at a clear binary moral choice. The final second holds both options visually while the narrator asks the exact choiceQuestion. Do not resolve it.
 2. positive — one fresh 6-second base prompt followed by exactly two 7-second continuation prompts in extensions, producing one combined 20-second clip. Begin at the decision moment, show the caring action, then use extension 1 for its immediate practical consequence and extension 2 for the friend's emotional response and a warm lead-in to the shared ending. Do not state the final moral yet.

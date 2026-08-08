@@ -519,6 +519,7 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .playback-preparing { position: absolute; z-index: 6; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; color: white; background: radial-gradient(circle at 50% 35%, rgba(61,103,79,.96), rgba(14,39,28,.98)); text-align: center; }
 .playback-preparing > span { color: #f7cc79; font-size: 8px; font-weight: 900; letter-spacing: .14em; }
 .playback-preparing h2 { margin: 11px 0 10px; font-family: Georgia, serif; font-size: clamp(23px, 3.5vw, 36px); font-weight: 500; }
+.playback-preparing h2.narrator-intro { max-width: 720px; line-height: 1.25; text-wrap: balance; }
 .playback-preparing p { max-width: 510px; margin: 13px 0 0; color: #c8d8ce; font-size: 9px; line-height: 1.55; }
 .playback-preparing small { margin-top: 9px; color: #bdd0c3; font-size: 8px; }
 .playback-preparing button { margin-top: 18px; padding: 11px 17px; color: var(--forest); border: 0; border-radius: 11px; background: white; cursor: pointer; font-size: 10px; font-weight: 850; }
@@ -538,7 +539,8 @@ select:focus { border-color: #789b81; box-shadow: 0 0 0 4px rgba(115, 147, 123, 
 .route-node.active > span { color: white; background: var(--forest); }
 .route-node.done > span { color: white; background: var(--sage); }
 .route-split,
-.route-join { height: 7px; border-left: 1px solid #b9c8bc; margin-left: 24px; }
+.route-join,
+.route-lead { height: 7px; border-left: 1px solid #b9c8bc; margin-left: 24px; }
 .route-join { margin-top: -9px; }
 .parent-check { display: grid; gap: 6px; margin-top: 17px; padding: 13px; color: #56675d; border-radius: 12px; background: #edf5e9; }
 .parent-check strong { font-size: 9px; }

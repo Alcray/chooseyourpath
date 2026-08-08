@@ -8,12 +8,15 @@ test("creates, tracks, and plays both branches without replacing video elements"
   const sourceResponse = await fetch(`${sourceBaseUrl}/api/stories/${sourceStoryId}`);
   expect(sourceResponse.status).toBe(200);
   const sourcePayload = await sourceResponse.json() as { story: Record<string, unknown> & { plan: Record<string, unknown>; brief: Record<string, unknown> } };
-  const plan = sourcePayload.story.plan as {
+  const sourcePlan = sourcePayload.story.plan as {
     title: string;
+    childIntro: string;
     positiveChoice: { label: string };
     negativeChoice: { label: string };
     clips: Array<{ id: string }>;
   };
+  const narratorSetup = "Երկու կենդանիները միասին խաղում են։ Հետո նրանց մոտ է գալիս մի նապաստակ․ նա մոլորված ու անհանգիստ տեսք ունի։";
+  const plan = { ...sourcePlan, childIntro: narratorSetup };
   const brief = sourcePayload.story.brief;
   const uiStoryId = "11111111-1111-4111-8111-111111111111";
   let statusRequests = 0;
@@ -155,6 +158,9 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await videos.evaluateAll((elements) => elements.forEach((element, index) => {
     element.setAttribute("data-e2e-node", `persistent-${index}`);
   }));
+  await expect(page.locator(".narrator-intro")).toHaveText(narratorSetup);
+  await expect(page.locator(".playback-route span.active")).toHaveText("00");
+  await page.screenshot({ path: "/tmp/kindpath-narrator-e2e.png", fullPage: true });
 
   async function pauseAndResumeVisibleClip() {
     const visibleVideo = page.locator("video.visible");
@@ -168,6 +174,7 @@ test("creates, tracks, and plays both branches without replacing video elements"
 
   await page.getByRole("button", { name: /Start story/ }).click();
   await expect(page.getByText("Now playing")).toBeVisible();
+  await expect(page.locator(".playback-route span.active")).toHaveText("01");
   await pauseAndResumeVisibleClip();
   await page.locator("video.visible").dispatchEvent("ended");
   await expect(page.locator(".decision-overlay")).toBeVisible();

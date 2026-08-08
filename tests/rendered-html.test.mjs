@@ -84,7 +84,11 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /warmingClipsRef/);
   assert.match(studio, /!seamlessTransition/);
   assert.match(studio, /clipDurationLabel\(plan, "positive"\)/);
+  assert.match(studio, /NARRATOR SETUP · ՊԱՏՄՈՂԻ ՆԵՐԱԾՈՒԹՅՈՒՆ/);
+  assert.match(studio, /"narrator-intro"/);
+  assert.match(studio, /playback === "intro"/);
   assert.match(plannerConfig, /gemini-3\.5-flash-lite/);
+  assert.match(plannerConfig, /childIntro field is the narrator's concrete pre-story setup/);
   assert.match(plannerRoute, /googleJson<GeminiResponse>/);
   assert.match(plannerConfig, /responseMimeType: "application\/json"/);
   assert.match(plannerConfig, /responseJsonSchema: plannerResponseJsonSchema/);

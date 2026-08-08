@@ -45,6 +45,8 @@ assert.equal(response.status, 200, `Planner route failed: ${payload?.error ?? "u
 assert.match(payload.blueprintId, /^[0-9a-f-]{36}$/i);
 assert.deepEqual(payload.plan.clips.map((clip) => clip.id), ["opening", "positive", "negative", "ending"]);
 assert.ok(Number.isInteger(payload.plan.continuitySeed));
+assert.ok(payload.plan.childIntro.length >= 10 && payload.plan.childIntro.length <= 500);
+assert.doesNotMatch(payload.plan.childIntro, /today we will see|այսօր մենք կտեսնենք/iu);
 for (const clip of payload.plan.clips) {
   assert.ok(clip.prompt.length >= 500 && clip.prompt.length <= 1800);
   assert.ok(clip.caption.length >= 1 && clip.caption.length <= 350);

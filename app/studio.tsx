@@ -15,7 +15,7 @@ import {
 } from "./lib/story";
 
 type StudioStage = "brief" | "blueprint" | "generating" | "player";
-type PlaybackStage = "opening" | "choice" | "positive" | "negative" | "ending" | "complete";
+type PlaybackStage = "intro" | "opening" | "choice" | "positive" | "negative" | "ending" | "complete";
 type JobStatus = "waiting" | "starting" | "rendering" | "extension_retry" | "extending" | "ingesting" | "ready" | "failed";
 type ClipJob = { status: JobStatus; extensionCount: number; error?: string };
 type JobMap = Record<ClipId, ClipJob>;
@@ -178,7 +178,7 @@ export function StoryStudio() {
   const [blueprintId, setBlueprintId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobMap>(emptyJobs);
   const [videoUrls, setVideoUrls] = useState<VideoMap>({});
-  const [playback, setPlayback] = useState<PlaybackStage>("opening");
+  const [playback, setPlayback] = useState<PlaybackStage>("intro");
   const [chosenPath, setChosenPath] = useState<"positive" | "negative" | null>(null);
   const [isPlanning, setIsPlanning] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -404,7 +404,7 @@ export function StoryStudio() {
     setPlaybackNeedsGesture(false);
     setSeamlessTransition(false);
     setMediaErrors({});
-    setPlayback("opening");
+    setPlayback("intro");
     setChosenPath(null);
   }
 
@@ -605,7 +605,7 @@ export function StoryStudio() {
       setBlueprintId(result.blueprintId);
       localStorage.removeItem(PENDING_START_STORAGE_KEY);
       setJobs(emptyJobs());
-      setPlayback("opening");
+      setPlayback("intro");
       setChosenPath(null);
       setStage("blueprint");
     } catch (requestError) {
@@ -1003,7 +1003,7 @@ export function StoryStudio() {
           <section className="player-view">
             <div className="player-heading">
               <div><span className="section-kicker">Interactive preview</span><h1>{plan.title}</h1></div>
-              <div className="playback-route"><span className={playback === "opening" || playback === "choice" ? "active" : "done"}>01</span><i /><span className={playback === "positive" || playback === "negative" ? "active" : chosenPath ? "done" : ""}>{chosenPath === "negative" ? "03" : "02"}</span><i /><span className={playback === "ending" ? "active" : playback === "complete" ? "done" : ""}>04</span></div>
+              <div className="playback-route"><span className={playback === "intro" ? "active" : "done"}>00</span><i /><span className={playback === "opening" || playback === "choice" ? "active" : playback === "intro" ? "" : "done"}>01</span><i /><span className={playback === "positive" || playback === "negative" ? "active" : chosenPath ? "done" : ""}>{chosenPath === "negative" ? "03" : "02"}</span><i /><span className={playback === "ending" ? "active" : playback === "complete" ? "done" : ""}>04</span></div>
             </div>
 
             <div className="player-layout">
@@ -1050,8 +1050,8 @@ export function StoryStudio() {
                 })}
                 {!playbackStarted && (
                   <div className="playback-preparing" aria-live="polite">
-                    <span>{preStartTransitionPaused ? "OPENING PAUSED WHILE PREPARING" : failedMediaClip ? "ONE SCENE NEEDS TO RECONNECT" : playbackBufferReady ? "ALL PATHS PRIMED" : "STREAMING ALL FOUR PATHS"}</span>
-                    <h2>{preStartTransitionPaused ? "Tap to reconnect and begin the story." : failedMediaClip ? "Let’s reconnect the missing scene." : playbackBufferReady ? "Your story is ready to begin." : `The story can begin while paths ${bufferedClips.length} of ${CLIP_IDS.length} prepare…`}</h2>
+                    <span>{preStartTransitionPaused ? "OPENING PAUSED WHILE PREPARING" : failedMediaClip ? "ONE SCENE NEEDS TO RECONNECT" : "NARRATOR SETUP · ՊԱՏՄՈՂԻ ՆԵՐԱԾՈՒԹՅՈՒՆ"}</span>
+                    <h2 className={!preStartTransitionPaused && !failedMediaClip ? "narrator-intro" : undefined}>{preStartTransitionPaused ? "Tap to reconnect and begin the story." : failedMediaClip ? "Let’s reconnect the missing scene." : plan.childIntro}</h2>
                     <div
                       className="prebuffer-progress"
                       role="progressbar"
@@ -1062,7 +1062,7 @@ export function StoryStudio() {
                     >
                       <i style={{ width: `${(bufferedClips.length / CLIP_IDS.length) * 100}%` }} />
                     </div>
-                    <p>We’re preparing every path now so your child’s choice can continue smoothly.</p>
+                    <p>{!preStartTransitionPaused && !failedMediaClip ? playbackBufferReady ? "All four paths are ready. Begin when your child understands the setup." : `The opening is ready while paths ${bufferedClips.length} of ${CLIP_IDS.length} prepare in the background.` : "We’re preparing every path now so your child’s choice can continue smoothly."}</p>
                     {preStartTransitionPaused && <button ref={recoveryActionRef} type="button" onClick={continuePlayback}>Reconnect and start ↻</button>}
                     {!preStartTransitionPaused && failedMediaClip && <button type="button" onClick={() => retryFailedMedia(failedMediaClip)}>Retry scene ↻</button>}
                     {!preStartTransitionPaused && !failedMediaClip && playbackStartAvailable && <button type="button" onClick={startPlayback}>Start story ▶</button>}
@@ -1097,7 +1097,9 @@ export function StoryStudio() {
               <aside className="player-side">
                 <span className="card-label">Branching logic</span>
                 <div className="route-map">
-                  <div className={`route-node opening ${playback === "opening" || playback === "choice" ? "active" : "done"}`}><span>01</span><p><strong>Beginning</strong><small>Ends at the choice</small></p></div>
+                  <div className={`route-node narrator ${playback === "intro" ? "active" : "done"}`}><span>00</span><p><strong>Narrator setup</strong><small>Explains what is happening first</small></p></div>
+                  <div className="route-lead" />
+                  <div className={`route-node opening ${playback === "opening" || playback === "choice" ? "active" : playback === "intro" ? "" : "done"}`}><span>01</span><p><strong>Beginning</strong><small>Ends at the choice</small></p></div>
                   <div className="route-split" />
                   <div className={`route-node positive ${chosenPath === "positive" ? playback === "ending" || playback === "complete" ? "done" : playback === "positive" || pendingClipId === "positive" ? "active" : "" : ""}`}><span>02</span><p><strong>Caring path · {clipDurationLabel(plan, "positive")}</strong><small>{plan.positiveChoice.label}</small></p></div>
                   <div className={`route-node negative ${chosenPath === "negative" ? playback === "ending" || playback === "complete" ? "done" : playback === "negative" || pendingClipId === "negative" ? "active" : "" : ""}`}><span>03</span><p><strong>Learning path · {clipDurationLabel(plan, "negative")}</strong><small>{plan.negativeChoice.label}</small></p></div>
