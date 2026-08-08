@@ -7,7 +7,7 @@ async function postPlan(body, raw = false) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: raw ? body : JSON.stringify(body),
-    signal: AbortSignal.timeout(50_000),
+    signal: AbortSignal.timeout(240_000),
   });
 }
 
@@ -43,17 +43,26 @@ const response = await postPlan({
 const payload = await response.json();
 assert.equal(response.status, 200, `Planner route failed: ${payload?.error ?? "unknown error"}`);
 assert.match(payload.blueprintId, /^[0-9a-f-]{36}$/i);
+assert.equal(payload.plan.compiler.schemaVersion, "1.0");
+assert.equal(payload.plan.compiler.model, "gemini-3.5-flash-lite");
+assert.equal(payload.plan.moralSpec.policyDecision, "ALLOW");
+assert.equal(payload.plan.premiseCandidates.length, 3);
+assert.ok(payload.plan.premiseCandidates.every((premise) => premise.storynessScore >= 60));
+assert.equal(payload.plan.shots.length, 8);
+assert.equal(payload.plan.validation.valid, true);
+assert.equal(payload.plan.validation.semanticReview.approved, true);
+assert.ok(payload.plan.validation.checks.every((check) => check.passed));
 assert.deepEqual(payload.plan.clips.map((clip) => clip.id), ["opening", "positive", "negative", "ending"]);
 assert.ok(Number.isInteger(payload.plan.continuitySeed));
 assert.ok(payload.plan.childIntro.length >= 10 && payload.plan.childIntro.length <= 500);
 assert.doesNotMatch(payload.plan.childIntro, /today we will see|այսօր մենք կտեսնենք/iu);
 for (const clip of payload.plan.clips) {
-  assert.ok(clip.prompt.length >= 500 && clip.prompt.length <= 1800);
+  assert.ok(clip.prompt.length >= 500 && clip.prompt.length <= 2600);
   assert.ok(clip.caption.length >= 1 && clip.caption.length <= 350);
   const expectedExtensions = clip.id === "positive" || clip.id === "negative" ? 2 : 0;
   assert.equal(clip.extensions.length, expectedExtensions);
   for (const extension of clip.extensions) {
-    assert.ok(extension.prompt.length >= 500 && extension.prompt.length <= 1800);
+    assert.ok(extension.prompt.length >= 500 && extension.prompt.length <= 2600);
     assert.ok(extension.caption.length >= 1 && extension.caption.length <= 350);
   }
 }

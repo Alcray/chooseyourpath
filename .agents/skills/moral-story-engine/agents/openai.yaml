@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moral Story Engine"
+  short_description: "Guardrails for branching children stories"
+  default_prompt: "Use $moral-story-engine to implement and validate a safe branching story compiler."

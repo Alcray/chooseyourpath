@@ -10,10 +10,10 @@ import {
   SETTINGS,
   baseClipDuration,
   type StoryBrief,
-  type StoryPlan,
 } from "../../lib/story";
+import { validateStoryPackage } from "../../lib/story-compiler";
 import { getStoryClips, requestOwnerId, storyPayload } from "../../lib/story-store";
-import { startVeoClip } from "../../lib/veo";
+import { getVideoProvider } from "../../lib/video-provider";
 
 const BLUEPRINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -80,89 +80,6 @@ function validateStoredBrief(value: unknown): StoryBrief {
   }
 
   return { lesson, characterPairId, settingId, ageBand, language };
-}
-
-function validateStoredPlan(value: unknown): StoryPlan {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new GoogleApiError("The stored story blueprint is invalid.", 422);
-  }
-  const plan = value as Record<string, unknown>;
-  if (!Number.isInteger(plan.continuitySeed) || (plan.continuitySeed as number) < 0 || (plan.continuitySeed as number) > 0xffff_ffff) {
-    throw new GoogleApiError("The blueprint continuity seed is invalid.", 422);
-  }
-  if (!Array.isArray(plan.clips) || plan.clips.length !== CLIP_IDS.length) {
-    throw new GoogleApiError("The blueprint must contain exactly four clips.", 422);
-  }
-
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const candidate of plan.clips) {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      throw new GoogleApiError("The blueprint contains an invalid clip.", 422);
-    }
-    const clip = candidate as Record<string, unknown>;
-    if (typeof clip.id !== "string" || !CLIP_IDS.includes(clip.id as (typeof CLIP_IDS)[number]) || byId.has(clip.id)) {
-      throw new GoogleApiError("The blueprint clip roles must be exact and unique.", 422);
-    }
-    byId.set(clip.id, clip);
-  }
-  if (!CLIP_IDS.every((id) => byId.has(id))) {
-    throw new GoogleApiError("The blueprint is missing a required clip role.", 422);
-  }
-
-  const positiveChoice = plan.positiveChoice;
-  const negativeChoice = plan.negativeChoice;
-  if (
-    !positiveChoice ||
-    typeof positiveChoice !== "object" ||
-    Array.isArray(positiveChoice) ||
-    !negativeChoice ||
-    typeof negativeChoice !== "object" ||
-    Array.isArray(negativeChoice)
-  ) {
-    throw new GoogleApiError("The blueprint choices are invalid.", 422);
-  }
-
-  const positive = positiveChoice as Record<string, unknown>;
-  const negative = negativeChoice as Record<string, unknown>;
-  return {
-    title: boundedString(plan.title, "title", 1, 120),
-    parentSummary: boundedString(plan.parentSummary, "parent summary", 1, 600),
-    childIntro: boundedString(plan.childIntro, "child introduction", 1, 500),
-    choiceQuestion: boundedString(plan.choiceQuestion, "choice question", 1, 300),
-    positiveChoice: {
-      label: boundedString(positive.label, "positive choice label", 1, 100),
-      explanation: boundedString(positive.explanation, "positive choice explanation", 1, 500),
-    },
-    negativeChoice: {
-      label: boundedString(negative.label, "negative choice label", 1, 100),
-      explanation: boundedString(negative.explanation, "negative choice explanation", 1, 500),
-    },
-    continuitySeed: plan.continuitySeed as number,
-    clips: CLIP_IDS.map((id) => {
-      const clip = byId.get(id)!;
-      const expectedExtensionCount = id === "positive" || id === "negative" ? 2 : 0;
-      if (!Array.isArray(clip.extensions) || clip.extensions.length !== expectedExtensionCount) {
-        throw new GoogleApiError(`The ${id} clip has an invalid extension plan.`, 422);
-      }
-      return {
-        id,
-        title: boundedString(clip.title, `${id} clip title`, 1, 100),
-        summary: boundedString(clip.summary, `${id} clip summary`, 1, 500),
-        prompt: boundedString(clip.prompt, `${id} clip prompt`, 500, 1800),
-        caption: boundedString(clip.caption, `${id} clip caption`, 1, 350),
-        extensions: clip.extensions.map((extension, index) => {
-          if (!extension || typeof extension !== "object" || Array.isArray(extension)) {
-            throw new GoogleApiError(`The ${id} extension ${index + 1} is invalid.`, 422);
-          }
-          const beat = extension as Record<string, unknown>;
-          return {
-            prompt: boundedString(beat.prompt, `${id} extension ${index + 1} prompt`, 500, 1800),
-            caption: boundedString(beat.caption, `${id} extension ${index + 1} caption`, 1, 350),
-          };
-        }),
-      };
-    }),
-  };
 }
 
 async function existingStory(ownerUserId: string, idempotencyKey: string) {
@@ -234,7 +151,8 @@ export async function POST(request: Request) {
       throw new GoogleApiError("The stored blueprint could not be read. Create a new blueprint.", 422);
     }
     const brief = validateStoredBrief(briefValue);
-    const plan = validateStoredPlan(planValue);
+    const plan = validateStoryPackage(planValue);
+    const videoProvider = getVideoProvider();
 
     const storyId = crypto.randomUUID();
     const d1 = getRawDb();
@@ -296,7 +214,7 @@ export async function POST(request: Request) {
     const starts = await Promise.allSettled(
       plan.clips.map(async (clip) => ({
         slot: clip.id,
-        operationName: await startVeoClip(clip.prompt, plan.continuitySeed, baseClipDuration(clip.id)),
+        operationName: await videoProvider.start(clip.prompt, plan.continuitySeed, baseClipDuration(clip.id)),
       })),
     );
 

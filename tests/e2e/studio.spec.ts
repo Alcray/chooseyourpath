@@ -1,23 +1,66 @@
 import { expect, test } from "@playwright/test";
+import compiledFixture from "../fixtures/compiled-story-input.json" with { type: "json" };
 
-const sourceBaseUrl = process.env.TEST_MEDIA_BASE_URL ?? "http://127.0.0.1:8787";
 const sourceStoryId = process.env.TEST_MEDIA_STORY_ID ?? "";
 
 test("creates, tracks, and plays both branches without replacing video elements", async ({ page }) => {
   expect(sourceStoryId).toMatch(/^[0-9a-f-]{36}$/i);
-  const sourceResponse = await fetch(`${sourceBaseUrl}/api/stories/${sourceStoryId}`);
-  expect(sourceResponse.status).toBe(200);
-  const sourcePayload = await sourceResponse.json() as { story: Record<string, unknown> & { plan: Record<string, unknown>; brief: Record<string, unknown> } };
-  const sourcePlan = sourcePayload.story.plan as {
-    title: string;
-    childIntro: string;
-    positiveChoice: { label: string };
-    negativeChoice: { label: string };
-    clips: Array<{ id: string }>;
-  };
   const narratorSetup = "Երկու կենդանիները միասին խաղում են։ Հետո նրանց մոտ է գալիս մի նապաստակ․ նա մոլորված ու անհանգիստ տեսք ունի։";
-  const plan = { ...sourcePlan, childIntro: narratorSetup };
-  const brief = sourcePayload.story.brief;
+  const clips = (["opening", "positive", "negative", "ending"] as const).map((id) => {
+    const clipShots = compiledFixture.shots.filter((shot) => shot.clipId === id).sort((a, b) => a.segmentIndex - b.segmentIndex);
+    return {
+      id,
+      title: id === "opening" ? "Adventure setup" : id === "positive" ? "Share the scoop" : id === "negative" ? "Keep it and hurry" : "Shared ending",
+      summary: clipShots.map((shot) => shot.timedBeats.join(" ")).join(" "),
+      prompt: "Canon-locked test render prompt. ".repeat(20),
+      caption: clipShots[0].spokenText,
+      extensions: clipShots.slice(1).map((shot) => ({
+        prompt: "Canon-locked extension prompt. ".repeat(20),
+        caption: shot.spokenText,
+      })),
+    };
+  });
+  const plan = {
+    title: compiledFixture.title,
+    parentSummary: compiledFixture.parentSummary,
+    childIntro: narratorSetup,
+    choiceQuestion: compiledFixture.graph.choice.question,
+    positiveChoice: {
+      label: compiledFixture.graph.choice.options[0].childText,
+      explanation: compiledFixture.graph.choice.options[0].explanation,
+    },
+    negativeChoice: {
+      label: compiledFixture.graph.choice.options[1].childText,
+      explanation: compiledFixture.graph.choice.options[1].explanation,
+    },
+    continuitySeed: compiledFixture.continuitySeed,
+    clips,
+    compiler: {
+      schemaVersion: "1.0" as const,
+      promptVersion: "branching-compiler-v1" as const,
+      model: "gemini-3.5-flash-lite",
+      compiledAt: Date.now(),
+      stages: ["policy", "premises", "story_graph", "independent_review", "shot_manifest"].map((id) => ({ id, status: "passed" as const })),
+    },
+    moralSpec: compiledFixture.moralSpec,
+    premiseCandidates: compiledFixture.premiseCandidates,
+    selectedPremiseId: compiledFixture.selectedPremiseId,
+    canon: compiledFixture.canon,
+    graph: compiledFixture.graph,
+    shots: compiledFixture.shots,
+    validation: {
+      valid: true,
+      checks: Array.from({ length: 15 }, (_, index) => ({ id: `check_${index}`, label: `Check ${index}`, passed: true, detail: "Golden fixture passed." })),
+      semanticReview: compiledFixture.semanticReview,
+    },
+  };
+  const brief = {
+    lesson: compiledFixture.moralSpec.sourceLesson,
+    characterPairId: "pip-momo",
+    settingId: "riverside-garden",
+    ageBand: "6-8",
+    language: "Armenian",
+  };
   const uiStoryId = "11111111-1111-4111-8111-111111111111";
   let statusRequests = 0;
 
@@ -143,8 +186,14 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await page.getByLabel("World").selectOption("riverside-garden");
   await page.getByRole("button", { name: /Create story blueprint/ }).click();
 
-  await expect(page.getByRole("heading", { name: plan.title })).toBeVisible();
-  await expect(page.getByText("Each choice path is extended to 20 seconds", { exact: false })).toBeVisible();
+  await expect(page.getByRole("heading", { name: plan.title, level: 1 })).toBeVisible();
+  await expect(page.getByText("Selected adventure premise")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "The Garden Waterwheel", level: 2 })).toBeVisible();
+  await expect(page.getByText("ALLOW", { exact: true })).toBeVisible();
+  await expect(page.getByText("15/15", { exact: false })).toBeVisible();
+  await expect(page.getByText("Both paths rejoin safely")).toBeVisible();
+  await expect(page.getByText("compiled into 8 canon-locked segments", { exact: false })).toBeVisible();
+  await page.screenshot({ path: "/tmp/kindpath-compiler-approval-e2e.png", fullPage: true });
   await page.getByRole("button", { name: /Generate all four clips/ }).click();
 
   const stageProgress = page.getByRole("progressbar", { name: "Generation stages completed" });

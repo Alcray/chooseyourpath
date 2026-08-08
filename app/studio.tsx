@@ -9,6 +9,7 @@ import {
   SETTINGS,
   getCharacterPair,
   getSetting,
+  isStoryPackage,
   type ClipId,
   type StoryBrief,
   type StoryPlan,
@@ -50,6 +51,14 @@ type PendingStart = {
 
 const GENERATION_STORAGE_KEY = "kindpath-generation";
 const PENDING_START_STORAGE_KEY = "kindpath-pending-start";
+
+const COMPILER_STAGES = [
+  { label: "Moral policy", detail: "Interpreting the behavior and child-safety boundaries" },
+  { label: "Adventure premises", detail: "Comparing three story-first ideas" },
+  { label: "Story graph", detail: "Tracking characters, props, knowledge, and promises" },
+  { label: "Independent review", detail: "Checking causality, pedagogy, safety, and convergence" },
+  { label: "Shot manifest", detail: "Compiling eight bounded animation segments" },
+] as const;
 
 const DEFAULT_BRIEF: StoryBrief = {
   lesson: "Sharing toys when a friend comes to play",
@@ -181,6 +190,7 @@ export function StoryStudio() {
   const [playback, setPlayback] = useState<PlaybackStage>("intro");
   const [chosenPath, setChosenPath] = useState<"positive" | "negative" | null>(null);
   const [isPlanning, setIsPlanning] = useState(false);
+  const [planningStageIndex, setPlanningStageIndex] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState("");
   const [savedGeneration, setSavedGeneration] = useState<SavedGeneration | null>(null);
@@ -255,6 +265,14 @@ export function StoryStudio() {
   }, [generationStartedAt, stage]);
 
   useEffect(() => {
+    if (!isPlanning) return;
+    const timer = window.setInterval(() => {
+      setPlanningStageIndex((current) => Math.min(COMPILER_STAGES.length - 1, current + 1));
+    }, 4_500);
+    return () => window.clearInterval(timer);
+  }, [isPlanning]);
+
+  useEffect(() => {
     if (playbackNeedsGesture) recoveryActionRef.current?.focus();
     else if (playback === "choice") firstChoiceRef.current?.focus();
     else if (playback === "complete") completionActionRef.current?.focus();
@@ -263,6 +281,24 @@ export function StoryStudio() {
   const currentStep = { brief: 1, blueprint: 2, generating: 3, player: 4 }[stage];
   const selectedPair = getCharacterPair(brief.characterPairId);
   const selectedSetting = getSetting(brief.settingId);
+  const compiledPackage = plan && isStoryPackage(plan) ? plan : null;
+  const selectedPremise = compiledPackage?.premiseCandidates.find(
+    (premise) => premise.id === compiledPackage.selectedPremiseId,
+  );
+  const validationPassed = compiledPackage?.validation.checks.filter((entry) => entry.passed).length ?? 0;
+  const semanticAverage = compiledPackage
+    ? Math.round(([
+        compiledPackage.validation.semanticReview.storyInterest,
+        compiledPackage.validation.semanticReview.causalContinuity,
+        compiledPackage.validation.semanticReview.choiceMeaning,
+        compiledPackage.validation.semanticReview.consequenceProportion,
+        compiledPackage.validation.semanticReview.repairQuality,
+        compiledPackage.validation.semanticReview.ageFit,
+        compiledPackage.validation.semanticReview.moralClarity,
+        compiledPackage.validation.semanticReview.childSafety,
+        compiledPackage.validation.semanticReview.convergence,
+      ].reduce((sum, score) => sum + score, 0) / 45) * 100)
+    : 0;
   const readyCount = CLIP_IDS.filter((id) => jobs[id].status === "ready").length;
   const failedCount = CLIP_IDS.filter((id) => jobs[id].status === "failed").length;
   const activeCount = CLIP_IDS.filter((id) => ["starting", "rendering", "extension_retry", "extending", "ingesting"].includes(jobs[id].status)).length;
@@ -598,6 +634,7 @@ export function StoryStudio() {
     event.preventDefault();
     setError("");
     setIsPlanning(true);
+    setPlanningStageIndex(0);
     setVideoUrls({});
     try {
       const result = await apiRequest<{ blueprintId: string; plan: StoryPlan }>("/api/plan", brief);
@@ -869,8 +906,33 @@ export function StoryStudio() {
 
               {error && <p className="form-error" role="alert">{error}</p>}
               <button className="main-action" disabled={isPlanning} type="submit">
-                {isPlanning ? <><span className="spinner" /> Directing the story…</> : <>Create story blueprint <span>→</span></>}
+                {isPlanning ? <><span className="spinner" /> Compiling the story…</> : <>Create story blueprint <span>→</span></>}
               </button>
+              {isPlanning && (
+                <div className="compiler-progress" aria-live="polite">
+                  <div className="compiler-progress-copy">
+                    <strong>{COMPILER_STAGES[planningStageIndex].label}</strong>
+                    <span>{COMPILER_STAGES[planningStageIndex].detail}</span>
+                  </div>
+                  <div
+                    className="compiler-progress-line"
+                    role="progressbar"
+                    aria-label="Story compiler progress"
+                    aria-valuemin={1}
+                    aria-valuemax={COMPILER_STAGES.length}
+                    aria-valuenow={planningStageIndex + 1}
+                  >
+                    <i style={{ width: `${((planningStageIndex + 1) / COMPILER_STAGES.length) * 100}%` }} />
+                  </div>
+                  <ol>
+                    {COMPILER_STAGES.map((compilerStage, index) => (
+                      <li className={index < planningStageIndex ? "done" : index === planningStageIndex ? "active" : ""} key={compilerStage.label}>
+                        <span>{index < planningStageIndex ? "✓" : index + 1}</span>{compilerStage.label}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
               <p className="action-note">Blueprinting uses text generation only. You approve the story before four video renders begin.</p>
             </form>
           </section>
@@ -885,6 +947,26 @@ export function StoryStudio() {
 
             <div className="blueprint-grid">
               <div className="blueprint-main">
+                {compiledPackage && selectedPremise && (
+                  <article className="compiler-summary">
+                    <div className="compiler-summary-heading">
+                      <span className={`policy-badge ${compiledPackage.moralSpec.policyDecision.toLowerCase()}`}>{compiledPackage.moralSpec.policyDecision.replaceAll("_", " ")}</span>
+                      <span>Compiler v{compiledPackage.compiler.schemaVersion} · {compiledPackage.compiler.model}</span>
+                    </div>
+                    <span className="card-label">Selected adventure premise</span>
+                    <h2>{selectedPremise.title}</h2>
+                    <p>{selectedPremise.logline}</p>
+                    <dl>
+                      <div><dt>External goal</dt><dd>{selectedPremise.externalGoal}</dd></div>
+                      <div><dt>Why this framing</dt><dd>{compiledPackage.moralSpec.policyReason}</dd></div>
+                    </dl>
+                    <div className="compiler-metrics">
+                      <span><strong>{selectedPremise.storynessScore}</strong> storyness</span>
+                      <span><strong>{validationPassed}/{compiledPackage.validation.checks.length}</strong> checks passed</span>
+                      <span><strong>{semanticAverage}%</strong> editor score</span>
+                    </div>
+                  </article>
+                )}
                 <article className="choice-preview">
                   <span className="card-label">The child will decide</span>
                   <p className="child-intro">{plan.childIntro}</p>
@@ -901,6 +983,16 @@ export function StoryStudio() {
                     return <article key={clip.id}><span className={`clip-icon ${clip.id}`}>{meta.icon}</span><div><small>CLIP {meta.number}</small><h3>{clip.title}</h3><p>{clip.summary}</p></div><b>{clipDurationLabel(plan, clip.id)}</b></article>;
                   })}
                 </div>
+                {compiledPackage && (
+                  <article className="branch-graph-preview">
+                    <div><span className="card-label">Validated branch graph</span><strong>Both paths rejoin safely</strong></div>
+                    <div className="branch-graph-columns">
+                      <section><small>CARING PATH</small>{compiledPackage.graph.branches.constructive.beats.map((beat) => <p key={beat.id}>{beat.summary}</p>)}</section>
+                      <section><small>LEARNING + REPAIR PATH</small>{compiledPackage.graph.branches.harmful.beats.map((beat) => <p key={beat.id}>{beat.summary}</p>)}</section>
+                    </div>
+                    <p className="convergence-note">✓ Shared finale preconditions validated · {compiledPackage.graph.reflectionPrompt}</p>
+                  </article>
+                )}
               </div>
 
               <aside className="continuity-panel">
@@ -913,7 +1005,7 @@ export function StoryStudio() {
                   <div><dt>Shared seed</dt><dd>#{plan.continuitySeed}</dd></div>
                 </dl>
                 <div className="lock-list"><span>✓ Same character design</span><span>✓ Same wardrobe + props</span><span>✓ Same world + lighting</span><span>✓ Same narrator voice</span></div>
-                <div className="render-notice"><strong>Ready to render 4 final clips</strong><span>Opening and ending are 8 seconds. Each choice path is extended to 20 seconds at 720p with native audio. This may take several minutes and uses video-generation quota.</span></div>
+                <div className="render-notice"><strong>{compiledPackage ? "Compiler-approved for rendering" : "Ready to render 4 final clips"}</strong><span>{compiledPackage ? "The parent lesson never goes directly to video. This approved graph was compiled into 8 canon-locked segments, assembled as 4 final clips: 8s, 20s, 20s, and 8s." : "Opening and ending are 8 seconds. Each choice path is extended to 20 seconds at 720p with native audio. This may take several minutes and uses video-generation quota."}</span></div>
                 {error && <p className="form-error" role="alert">{error}</p>}
                 <button className="main-action" disabled={!blueprintId} type="button" onClick={() => blueprintId && void startGeneration(plan, brief, blueprintId)}>
                   Generate all four clips <span>→</span>

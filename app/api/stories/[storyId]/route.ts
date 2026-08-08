@@ -2,9 +2,10 @@ import { and, asc, eq, inArray, lt, or } from "drizzle-orm";
 import { getDb, getRawDb } from "../../../../db";
 import { clips, stories } from "../../../../db/schema";
 import { apiErrorResponse, getMediaBucket, GoogleApiError } from "../../../lib/google";
-import { CLIP_IDS, baseClipDuration, isClipId, type StoryPlan } from "../../../lib/story";
+import { CLIP_IDS, baseClipDuration, isClipId } from "../../../lib/story";
+import { validateStoryPackage } from "../../../lib/story-compiler";
 import { getOwnedStory, getStoryClips, requestOwnerId, storyPayload } from "../../../lib/story-store";
-import { decodeBase64Video, pollVeoClip, startVeoClip, startVeoExtension } from "../../../lib/veo";
+import { getVideoProvider, type ProviderPollResult } from "../../../lib/video-provider";
 
 export const dynamic = "force-dynamic";
 
@@ -15,12 +16,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     const story = await getOwnedStory(storyId, ownerUserId);
     if (!story) return Response.json({ error: "Story not found." }, { status: 404 });
 
-    let plan: StoryPlan;
+    let plan;
     try {
-      plan = JSON.parse(story.planJson) as StoryPlan;
+      plan = validateStoryPackage(JSON.parse(story.planJson));
     } catch {
       throw new GoogleApiError("The stored story blueprint could not be read.", 422);
     }
+    const videoProvider = getVideoProvider();
 
     const db = getDb();
     const d1 = getRawDb();
@@ -63,7 +65,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
 
         if (Number(claim.meta.changes ?? 0) === 1) {
           try {
-            const operationName = await startVeoClip(
+            const operationName = await videoProvider.start(
               planClip.prompt,
               plan.continuitySeed,
               extensions.length === 2 ? baseClipDuration(nextClip.slot) : 8,
@@ -101,10 +103,10 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
           .run();
 
         if (Number(pollClaim.meta.changes ?? 0) === 1) {
-          let result: Awaited<ReturnType<typeof pollVeoClip>>;
+          let result: ProviderPollResult;
           let transientMessage: string | null = null;
           try {
-            result = await pollVeoClip(nextClip.providerJobId);
+            result = await videoProvider.poll(nextClip.providerJobId);
           } catch (pollError) {
             const retryable =
               pollError instanceof TypeError ||
@@ -158,7 +160,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
             }
 
             try {
-              const operationName = await startVeoExtension(result.video, extension.prompt);
+              const operationName = await videoProvider.extend(result.video, extension.prompt);
               await d1
                 .prepare(
                   "UPDATE clips SET status = ?, provider_job_id = ?, extension_count = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
@@ -224,7 +226,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
             const r2Key = `stories/${storyId}/${nextClip.slot}.mp4`;
             let videoBytes: Uint8Array | null = null;
             try {
-              videoBytes = decodeBase64Video(result.video.base64);
+              videoBytes = videoProvider.decode(result.video);
             } catch {
               await d1
                 .prepare(

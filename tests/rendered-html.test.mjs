@@ -34,11 +34,15 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   const [
     studio,
     plannerRoute,
-    plannerConfig,
+    compilerConfig,
+    storyCompiler,
+    structuredGemini,
+    compilerModel,
     storyRoute,
     statusRoute,
     retryRoute,
     veo,
+    videoProvider,
     storyStore,
     schema,
     migration,
@@ -46,11 +50,15 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   ] = await Promise.all([
     readFile(new URL("../app/studio.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/plan/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/lib/planner-config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/compiler-config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/story-compiler.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/gemini-structured.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/compiler-model.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/stories/[storyId]/retry/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/veo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/video-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/story-store.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0001_giant_maddog.sql", import.meta.url), "utf8"),
@@ -87,28 +95,41 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /NARRATOR SETUP · ՊԱՏՄՈՂԻ ՆԵՐԱԾՈՒԹՅՈՒՆ/);
   assert.match(studio, /"narrator-intro"/);
   assert.match(studio, /playback === "intro"/);
-  assert.match(plannerConfig, /gemini-3\.5-flash-lite/);
-  assert.match(plannerConfig, /childIntro field is the narrator's concrete pre-story setup/);
-  assert.match(plannerRoute, /googleJson<GeminiResponse>/);
-  assert.match(plannerConfig, /responseMimeType: "application\/json"/);
-  assert.match(plannerConfig, /responseJsonSchema: plannerResponseJsonSchema/);
-  assert.doesNotMatch(plannerConfig, /responseSchema:/);
-  assert.match(plannerConfig, /maxOutputTokens: 16384/);
-  assert.match(plannerRoute, /AbortSignal\.timeout\(45_000\)/);
-  assert.doesNotMatch(plannerConfig, /temperature:|thinkingBudget|minLength|maxLength/);
-  assert.match(plannerConfig, /additionalProperties: false/);
-  assert.match(plannerRoute, /UNSAFE_STORY_PATTERN/);
-  assert.match(plannerRoute, /assertChildSafeText\(JSON\.stringify\(validated\), "plan"\)/);
-  assert.match(plannerRoute, /candidate\.finishReason === "MAX_TOKENS"/);
-  assert.match(plannerRoute, /expectedExtensionCount = id === "positive" \|\| id === "negative" \? 2 : 0/);
-  assert.match(plannerRoute, /incomplete blueprint\. Please try again\./);
+  assert.match(studio, /COMPILER_STAGES/);
+  assert.match(studio, /Story compiler progress/);
+  assert.match(studio, /Selected adventure premise/);
+  assert.match(studio, /Validated branch graph/);
+  assert.match(studio, /Compiler-approved for rendering/);
+  assert.match(compilerModel, /gemini-3\.5-flash-lite/);
+  assert.match(structuredGemini, /responseMimeType: "application\/json"/);
+  assert.match(structuredGemini, /responseJsonSchema/);
+  assert.match(structuredGemini, /AbortSignal\.timeout\(45_000\)/);
+  assert.match(compilerConfig, /moralSpecSchema/);
+  assert.match(compilerConfig, /premiseCandidatesSchema/);
+  assert.match(compilerConfig, /storyGraphSchema/);
+  assert.match(compilerConfig, /semanticReviewSchema/);
+  assert.match(compilerConfig, /shotManifestSchema/);
+  assert.match(compilerConfig, /exactly three adventure premises/i);
+  assert.match(storyCompiler, /classifyMoralPolicy/);
+  assert.match(storyCompiler, /deterministicGraphChecks/);
+  assert.match(storyCompiler, /validateStoryPackage/);
+  assert.match(storyCompiler, /assertChildSafePackage/);
+  assert.match(storyCompiler, /Veo continuation only/);
+  assert.match(plannerRoute, /runStructuredCompilerStage/);
+  assert.match(plannerRoute, /Adventure premise selection/);
+  assert.match(plannerRoute, /Independent story review/);
+  assert.match(plannerRoute, /Shot manifest compilation/);
+  assert.match(plannerRoute, /assembleStoryPackage/);
   assert.doesNotMatch(plannerRoute, /DeepSeek|OpenRouter|deepseek|openRouterJson/);
-  assert.match(storyRoute, /startVeoClip/);
+  assert.match(storyRoute, /validateStoryPackage/);
+  assert.match(storyRoute, /getVideoProvider/);
+  assert.doesNotMatch(storyRoute, /startVeoClip/);
   assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);
   assert.match(storyRoute, /INSERT OR IGNORE INTO stories[\s\S]*VALUES \(\?, \?, \?, \?, \?, \?, \?, \?\)/);
   assert.doesNotMatch(storyRoute, /MAX_NEW_STORIES_PER_WINDOW|STORY_WINDOW_MS|three new stories every 24 hours/);
-  assert.match(statusRoute, /pollVeoClip/);
-  assert.match(statusRoute, /startVeoExtension/);
+  assert.match(statusRoute, /validateStoryPackage/);
+  assert.match(statusRoute, /videoProvider\.poll/);
+  assert.match(statusRoute, /videoProvider\.extend/);
   assert.match(statusRoute, /"extension_retry"/);
   assert.match(statusRoute, /nextClip\.status === "extension_retry" \? "extension_retry" : "rendering"/);
   assert.match(statusRoute, /status = \?, error_message = NULL, updated_at = \?.*"extending"/s);
@@ -117,6 +138,9 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(veo, /durationSeconds: 6 \| 8 = 8/);
   assert.doesNotMatch(veo, /task: "extend"/);
   assert.match(veo, /video: \{[\s\S]*bytesBase64Encoded: video\.base64/);
+  assert.match(videoProvider, /interface VideoProvider/);
+  assert.match(videoProvider, /google-veo-3\.1-fast/);
+  assert.match(videoProvider, /start: startVeoClip/);
   assert.match(storyStore, /extensionCount: clip\?\.extensionCount \?\? 0/);
   assert.match(schema, /extensionCount: integer\("extension_count"\)\.notNull\(\)\.default\(0\)/);
   assert.match(migration, /ADD `extension_count` integer DEFAULT 0 NOT NULL/);

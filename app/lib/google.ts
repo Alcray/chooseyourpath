@@ -1,4 +1,7 @@
 import { env } from "cloudflare:workers";
+import { GoogleApiError } from "./api-error";
+
+export { GoogleApiError } from "./api-error";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -10,18 +13,6 @@ type GenerationEnv = {
 
 function generationEnv() {
   return env as unknown as GenerationEnv;
-}
-
-export class GoogleApiError extends Error {
-  status: number;
-  retryable: boolean;
-
-  constructor(message: string, status = 500, retryable = false) {
-    super(message);
-    this.name = "GoogleApiError";
-    this.status = status;
-    this.retryable = retryable;
-  }
 }
 
 export function getGoogleApiKey() {

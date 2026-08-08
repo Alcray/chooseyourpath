@@ -29,7 +29,168 @@ export type StoryClip = {
   extensions: StoryClipExtension[];
 };
 
-export type StoryPlan = {
+export const POLICY_DECISIONS = ["ALLOW", "TRANSFORM", "REQUIRE_PARENT_REVIEW", "REJECT"] as const;
+export type PolicyDecision = (typeof POLICY_DECISIONS)[number];
+
+export type MoralSpec = {
+  sourceLesson: string;
+  compiledLesson: string;
+  value: string;
+  desiredBehavior: string;
+  temptingAlternative: string;
+  understandableMotive: string;
+  positiveConsequence: string;
+  naturalWrongConsequence: string;
+  repairAction: string;
+  ageBand: string;
+  emotionalIntensity: "gentle";
+  forbiddenTreatments: string[];
+  policyDecision: PolicyDecision;
+  policyReason: string;
+};
+
+export type AdventurePremise = {
+  id: string;
+  title: string;
+  logline: string;
+  externalGoal: string;
+  relationship: string;
+  escalatingObstacle: string;
+  setupPayoff: string;
+  constructiveEffort: string;
+  temptingAlternative: string;
+  naturalConsequence: string;
+  storynessScore: number;
+};
+
+export type CanonProp = {
+  id: string;
+  name: string;
+  ownerId: string;
+  initialCondition: string;
+};
+
+export type StoryState = {
+  id: string;
+  time: string;
+  locationId: string;
+  presentCharacterIds: string[];
+  propStates: Array<{
+    propId: string;
+    condition: string;
+    holderId: string;
+  }>;
+  characterKnowledge: Array<{
+    characterId: string;
+    facts: string[];
+  }>;
+  unresolvedPromises: string[];
+};
+
+export type StoryBeat = {
+  id: string;
+  phase: "setup" | "escalation" | "choice" | "consequence" | "repair" | "bridge" | "finale";
+  summary: string;
+  emotionalTurn: string;
+  reads: string[];
+  updates: string[];
+};
+
+export type StoryChoiceOption = {
+  id: string;
+  childText: string;
+  explanation: string;
+};
+
+export type StoryBranch = {
+  originStateId: string;
+  beats: StoryBeat[];
+  endState: StoryState;
+};
+
+export type StoryGraph = {
+  initialState: StoryState;
+  commonPrefix: StoryBeat[];
+  choice: {
+    question: string;
+    options: [StoryChoiceOption, StoryChoiceOption];
+  };
+  branches: {
+    constructive: StoryBranch;
+    harmful: StoryBranch;
+  };
+  convergence: {
+    requiredState: StoryState;
+    constructiveBridge: StoryBeat[];
+    harmfulBridge: StoryBeat[];
+    finale: StoryBeat[];
+    narrationByBranch: {
+      constructive: string;
+      harmful: string;
+    };
+  };
+  reflectionPrompt: string;
+};
+
+export type StoryCanon = {
+  characterIds: string[];
+  characterBible: string;
+  locationId: string;
+  locationBible: string;
+  props: CanonProp[];
+  visualStyle: string;
+  narratorVoiceId: string;
+};
+
+export type ShotManifestEntry = {
+  id: string;
+  clipId: ClipId;
+  segmentIndex: number;
+  durationSeconds: 6 | 7 | 8;
+  characterIds: string[];
+  locationId: string;
+  propIds: string[];
+  timedBeats: [string, string, string];
+  emotion: string;
+  camera: string;
+  audioDirection: string;
+  spokenText: string;
+  continuityFrom: string;
+};
+
+export type StoryValidationCheck = {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+};
+
+export type SemanticReview = {
+  approved: boolean;
+  storyInterest: number;
+  causalContinuity: number;
+  choiceMeaning: number;
+  consequenceProportion: number;
+  repairQuality: number;
+  ageFit: number;
+  moralClarity: number;
+  childSafety: number;
+  convergence: number;
+  concerns: string[];
+};
+
+export type CompilerTrace = {
+  schemaVersion: "1.0";
+  promptVersion: "branching-compiler-v1";
+  model: string;
+  compiledAt: number;
+  stages: Array<{
+    id: "policy" | "premises" | "story_graph" | "independent_review" | "shot_manifest";
+    status: "passed";
+  }>;
+};
+
+export type LegacyStoryPlan = {
   title: string;
   parentSummary: string;
   childIntro: string;
@@ -40,9 +201,39 @@ export type StoryPlan = {
   clips: StoryClip[];
 };
 
+export type StoryPackage = LegacyStoryPlan & {
+  compiler: CompilerTrace;
+  moralSpec: MoralSpec;
+  premiseCandidates: AdventurePremise[];
+  selectedPremiseId: string;
+  canon: StoryCanon;
+  graph: StoryGraph;
+  shots: ShotManifestEntry[];
+  validation: {
+    valid: boolean;
+    checks: StoryValidationCheck[];
+    semanticReview: SemanticReview;
+  };
+};
+
+export type StoryPlan = LegacyStoryPlan & Partial<Omit<StoryPackage, keyof LegacyStoryPlan>>;
+
+export function isStoryPackage(plan: StoryPlan): plan is StoryPackage {
+  return Boolean(
+    plan.compiler?.schemaVersion === "1.0" &&
+      plan.moralSpec &&
+      plan.canon &&
+      plan.graph &&
+      Array.isArray(plan.premiseCandidates) &&
+      Array.isArray(plan.shots) &&
+      plan.validation,
+  );
+}
+
 export const CHARACTER_PAIRS = [
   {
     id: "pip-momo",
+    characterIds: ["pip_fox_v1", "momo_rabbit_v1"],
     names: "Pip & Momo",
     emoji: "🦊 🐰",
     tagline: "Curious woodland friends",
@@ -52,6 +243,7 @@ export const CHARACTER_PAIRS = [
   },
   {
     id: "beni-sisi",
+    characterIds: ["beni_bear_v1", "sisi_squirrel_v1"],
     names: "Beni & Sisi",
     emoji: "🐻 🐿️",
     tagline: "Cozy forest neighbors",
@@ -61,6 +253,7 @@ export const CHARACTER_PAIRS = [
   },
   {
     id: "olli-dori",
+    characterIds: ["olli_otter_v1", "dori_duck_v1"],
     names: "Olli & Dori",
     emoji: "🦦 🦆",
     tagline: "Playful riverside explorers",
