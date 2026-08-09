@@ -18,19 +18,29 @@ function sleep(ms: number) {
 // immediately instead of waiting out ~4.5s of futile backoff first.
 export class QuotaExhaustedError extends Error {}
 
-// Lightweight narration option: Gemini's native TTS (via the Gemini Developer
-// API, generativelanguage.googleapis.com), which — unlike Google Cloud
-// Text-to-Speech — accepts a plain API key, so it needs none of the
-// service-account setup GoogleTtsProvider requires. Confirmed working with
-// real Armenian text; Gemini TTS documents Armenian ("hy") as a supported
-// language. Preferred provider whenever GEMINI_API_KEY is set.
+export interface GeminiTtsConfig {
+  name: string;
+  url: string; // full generateContent endpoint
+  headers: Record<string, string>;
+  voiceName: string;
+}
+
+// Gemini's native TTS. Both Google surfaces that host these models take an
+// identical request/response shape (`generateContent` with
+// responseModalities:["AUDIO"], returning raw headerless 16-bit PCM at 24kHz),
+// and differ only in URL and auth — so one implementation serves both:
 //
-// Known real-world limit: gemini-2.5-flash-tts caps at 100 requests/day per
-// project even on a billed account (confirmed via direct testing) — a busy
-// day of story generation can hit this. See narrationGenerator/index.ts for
-// the OpenAI fallback this is designed to hand off to.
+//   • Vertex AI (aiplatform.googleapis.com, needs project+region in the path).
+//     Accepts a Vertex API key. Confirmed to use a SEPARATE, much healthier
+//     quota pool than the Developer API, and empirically more reliable.
+//   • Gemini Developer API (generativelanguage.googleapis.com). Accepts an AI
+//     Studio key, but caps at ~100 requests/day per project even when billed.
+//
+// Both are preferred over Google Cloud Text-to-Speech, which refuses plain API
+// keys entirely (demands OAuth2/service-account auth — see GoogleTtsProvider).
+// See narrationGenerator/index.ts for how these are chained.
 export class GeminiTtsProvider implements NarrationProvider {
-  readonly name = "gemini-tts";
+  readonly name: string;
   // Only ever stores successful results. A failed attempt is NOT cached —
   // bulk pre-generation fires every scene's narration within a few seconds
   // of each other, which can trip transient rate limits; permanently caching
@@ -39,11 +49,9 @@ export class GeminiTtsProvider implements NarrationProvider {
   // later) retry for real.
   private cache = new Map<string, string>();
 
-  constructor(
-    private apiKey: string,
-    private model: string,
-    private voiceName: string
-  ) {}
+  constructor(private config: GeminiTtsConfig) {
+    this.name = config.name;
+  }
 
   async synthesize({ sceneKey, textHy }: NarrationRequest): Promise<string | null> {
     const cached = this.cache.get(sceneKey);
@@ -59,12 +67,12 @@ export class GeminiTtsProvider implements NarrationProvider {
           // Retrying against an exhausted daily quota can't succeed — fail
           // fast so a fallback provider (if configured) takes over
           // immediately instead of waiting out ~4.5s of futile backoff.
-          console.warn(`[geminiTtsProvider] daily quota exhausted for ${sceneKey}, not retrying:`, err.message);
+          console.warn(`[${this.name}] daily quota exhausted for ${sceneKey}, not retrying:`, err.message);
           return null;
         }
         const isLastAttempt = attempt === MAX_ATTEMPTS;
         console.warn(
-          `[geminiTtsProvider] narration synthesis attempt ${attempt}/${MAX_ATTEMPTS} failed for ${sceneKey}` + (isLastAttempt ? ", giving up for now:" : ", retrying:"),
+          `[${this.name}] narration synthesis attempt ${attempt}/${MAX_ATTEMPTS} failed for ${sceneKey}` + (isLastAttempt ? ", giving up for now:" : ", retrying:"),
           err
         );
         if (isLastAttempt) return null;
@@ -75,32 +83,32 @@ export class GeminiTtsProvider implements NarrationProvider {
   }
 
   private async synthesizeOnce(sceneKey: string, textHy: string): Promise<string> {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`, {
+    const res = await fetch(this.config.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+      headers: { "Content-Type": "application/json", ...this.config.headers },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: textHy }] }],
+        contents: [{ role: "user", parts: [{ text: textHy }] }],
         generationConfig: {
           responseModalities: ["AUDIO"],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.voiceName } } },
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.config.voiceName } } },
         },
       }),
     });
 
     if (res.status === 429) {
       const errText = await res.text().catch(() => "");
-      throw new QuotaExhaustedError(`Gemini TTS quota exceeded: ${errText}`);
+      throw new QuotaExhaustedError(`${this.name} quota exceeded: ${errText}`);
     }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      throw new Error(`Gemini TTS failed: ${res.status} ${errText}`);
+      throw new Error(`${this.name} failed: ${res.status} ${errText}`);
     }
 
     const data = (await res.json()) as {
       candidates?: { content?: { parts?: { inlineData?: { mimeType: string; data: string } }[] } }[];
     };
     const inline = data.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-    if (!inline) throw new Error("Gemini TTS response had no audio data");
+    if (!inline) throw new Error(`${this.name} response had no audio data`);
 
     const sampleRate = Number(/rate=(\d+)/.exec(inline.mimeType)?.[1] ?? 24000);
     const pcm = Buffer.from(inline.data, "base64");
