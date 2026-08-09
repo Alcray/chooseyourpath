@@ -1088,7 +1088,7 @@ export function StoryStudio() {
               <span aria-hidden="true">↻</span>
               <p>
                 <strong id="saved-story-status-title">
-                  {savedGeneration.compatibility?.mode === "playback_only"
+                  {savedGeneration.compatibility?.mode === "playback_only" || savedGeneration.status === "ready"
                     ? "A completed story is ready"
                     : savedGeneration.compatibility?.mode === "recompile_required"
                       ? "An older story needs rebuilding"

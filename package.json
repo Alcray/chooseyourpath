@@ -9,7 +9,7 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run lint && npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs && tsx --test tests/story-compiler.test.ts tests/story-migrations.test.ts tests/story-media.test.ts tests/provider-media.test.ts tests/story-package-binding.test.ts",
+    "test": "npm run lint && npm run typecheck && npm run build && node --test tests/rendered-html.test.mjs && tsx --test tests/story-compiler.test.ts tests/story-migrations.test.ts tests/story-media.test.ts tests/provider-media.test.ts tests/story-package-binding.test.ts tests/veo-contract.test.ts",
     "test:planner-live": "tsx tests/google-planner-live.mjs",
     "test:route-live": "node tests/planner-route-live.mjs",
     "test:approval-live": "tsx tests/story-approval-route-live.ts",

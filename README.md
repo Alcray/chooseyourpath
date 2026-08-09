@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-The local runtime needs `GOOGLE_API_KEY` for Gemini/Veo and `GOOGLE_CLOUD_PROJECT_NUMBER` for Veo. Keep credentials in ignored local/runtime configuration and never commit them.
+The local runtime needs `GOOGLE_API_KEY`. Veo uses the key-only Gemini API when the key permits it, or the Vertex API when `GOOGLE_CLOUD_PROJECT_NUMBER` is configured. Keep credentials in ignored local/runtime configuration and never commit them.
 
 ## Verification
 
@@ -35,10 +35,10 @@ npm run test:approval-live
 npm run test:compatibility-live
 ```
 
-To exercise native playback with an existing completed schema `1.0` story, provide its local story ID explicitly:
+To exercise native playback with an existing completed current or historical story, provide its local story ID explicitly:
 
 ```bash
-TEST_LEGACY_READY_STORY_ID=<story-uuid> npx playwright test tests/e2e/legacy-media-live.spec.ts
+TEST_READY_STORY_ID=<story-uuid> npx playwright test tests/e2e/legacy-media-live.spec.ts
 ```
 
 That opt-in check selects the supplied record, decodes all four real files, exercises native pause/resume on both choices and the shared ending, and accelerates scene boundaries with synthetic `ended` events. It does not claim natural transition latency or mathematically gapless playback.

@@ -99,6 +99,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /generation stages complete/);
   assert.match(studio, /Each choice path is extended to 20 seconds/);
   assert.match(studio, /const playbackStartAvailable = Boolean\(videoUrls\.opening\)/);
+  assert.match(studio, /compatibility\?\.mode === "playback_only" \|\| savedGeneration\.status === "ready"/);
   assert.match(studio, /const generationPlaybackMediaIncomplete = readyCount === CLIP_IDS\.length/);
   assert.match(studio, /readyCount < 4 \|\| generationPlaybackMediaIncomplete/);
   assert.match(studio, /Recheck missing media/);
@@ -188,7 +189,13 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(statusRoute, /provider_job_id = \? AND extension_count = \? AND updated_at = \?/);
   assert.match(veo, /durationSeconds: 6 \| 8 = 8/);
   assert.doesNotMatch(veo, /task: "extend"/);
-  assert.match(veo, /video: \{[\s\S]*bytesBase64Encoded: video\.base64/);
+  assert.match(veo, /video: vertexEndpoint[\s\S]*inlineData: \{[\s\S]*data: video\.base64/);
+  assert.match(veo, /bytesBase64Encoded: video\.base64/);
+  assert.match(veo, /generatedSamples\?\.\[0\]\?\.video/);
+  assert.match(veo, /method: "GET"/);
+  assert.match(veo, /url\.hostname !== "generativelanguage\.googleapis\.com"/);
+  assert.match(veo, /getGoogleProjectNumber/);
+  assert.match(veo, /fetchPredictOperation/);
   assert.doesNotMatch(veo, /mimeType: video\.mimeType \?\? "video\/mp4"/);
   assert.match(videoProvider, /interface VideoProvider/);
   assert.match(videoProvider, /google-veo-3\.1-fast/);

@@ -12,5 +12,6 @@ python3 "$repo_root/.agents/skills/moral-story-engine/scripts/inspect_prompt_cha
   "$repo_root/tests/story-migrations.test.ts" \
   "$repo_root/tests/story-media.test.ts" \
   "$repo_root/tests/provider-media.test.ts" \
-  "$repo_root/tests/story-package-binding.test.ts"
+  "$repo_root/tests/story-package-binding.test.ts" \
+  "$repo_root/tests/veo-contract.test.ts"
 npm --prefix "$repo_root" run typecheck

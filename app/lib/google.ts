@@ -28,11 +28,9 @@ export function getGoogleApiKey() {
 
 export function getGoogleProjectNumber() {
   const value = generationEnv().GOOGLE_CLOUD_PROJECT_NUMBER?.trim();
-  if (!value || !/^\d{6,20}$/.test(value)) {
-    throw new GoogleApiError(
-      "Video generation is missing its Google Cloud project configuration.",
-      503,
-    );
+  if (!value) return null;
+  if (!/^\d{6,20}$/.test(value)) {
+    throw new GoogleApiError("Video generation has an invalid Google Cloud project configuration.", 503);
   }
   return value;
 }

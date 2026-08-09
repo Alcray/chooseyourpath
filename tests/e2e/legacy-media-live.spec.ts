@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test";
 
-const legacyStoryId = process.env.TEST_LEGACY_READY_STORY_ID?.trim();
+const readyStoryId = (
+  process.env.TEST_READY_STORY_ID
+  ?? process.env.TEST_LEGACY_READY_STORY_ID
+)?.trim();
 
-test("plays a completed schema 1.0 story with native media on both paths", async ({ page }) => {
-  test.skip(!legacyStoryId, "Set TEST_LEGACY_READY_STORY_ID to exercise stored provider media.");
-  const storyId = legacyStoryId!;
+test("plays a supplied completed story with native media on both paths", async ({ page }) => {
+  test.skip(!readyStoryId, "Set TEST_READY_STORY_ID to exercise stored provider media.");
+  const storyId = readyStoryId!;
   expect(storyId).toMatch(/^[0-9a-f-]{36}$/i);
 
   const selectedStoryResponse = await page.request.get(`/api/stories/${storyId}`);
