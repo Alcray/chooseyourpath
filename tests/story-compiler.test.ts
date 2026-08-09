@@ -8,6 +8,8 @@ import {
   buildReviewPrompt,
   buildShotManifestPrompt,
   buildStoryGraphPrompt,
+  storyGraphBeatsSchema,
+  storyGraphStatesSchema,
 } from "../app/lib/compiler-config";
 import {
   assembleStoryPackage,
@@ -64,6 +66,37 @@ test("golden moral-policy corpus returns the expected policy decisions", () => {
       policyCase.lesson,
     );
   }
+});
+
+test("complex Gemini graph schemas keep structure while local validation owns cardinality", () => {
+  const schemas = [storyGraphBeatsSchema, storyGraphStatesSchema];
+  const serialized = JSON.stringify(schemas);
+  for (const unsupportedComplexityKey of ["additionalProperties", "minItems", "maxItems", "minimum", "maximum"]) {
+    assert.doesNotMatch(serialized, new RegExp(`\\"${unsupportedComplexityKey}\\"`));
+  }
+
+  const beats = storyGraphBeatsSchema as {
+    required: string[];
+    properties: { beats: { items: { required: string[]; properties: { path: { enum: string[] } } } } };
+  };
+  assert.deepEqual(beats.required, ["beats", "setupPayoffs"]);
+  assert.deepEqual(beats.properties.beats.items.required, [
+    "path", "order", "id", "phase", "summary", "emotionalTurn", "reads", "updates",
+  ]);
+  assert.deepEqual(beats.properties.beats.items.properties.path.enum, [
+    "common", "constructive", "harmful", "constructive_bridge", "harmful_bridge", "finale",
+  ]);
+
+  const states = storyGraphStatesSchema as {
+    required: string[];
+    properties: { states: { items: { required: string[]; properties: { role: { enum: string[] } } } } };
+  };
+  assert.deepEqual(states.required, ["states"]);
+  assert.deepEqual(states.properties.states.items.properties.role.enum, [
+    "initial", "constructive_end", "harmful_end", "finale_required",
+  ]);
+  assert.ok(states.properties.states.items.required.includes("characterKnowledge"));
+  assert.ok(states.properties.states.items.required.includes("relationships"));
 });
 
 test("assembles and revalidates a convergent four-clip StoryPackage", () => {

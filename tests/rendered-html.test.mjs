@@ -51,6 +51,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     storyMedia,
     schema,
     migration,
+    viteConfig,
     hosting,
   ] = await Promise.all([
     readFile(new URL("../app/studio.tsx", import.meta.url), "utf8"),
@@ -72,6 +73,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     readFile(new URL("../app/lib/story-media.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0001_giant_maddog.sql", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     access(new URL("../public/og.png", import.meta.url)),
     access(new URL("../public/favicon.png", import.meta.url)),
@@ -121,6 +123,9 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(structuredGemini, /responseJsonSchema/);
   assert.doesNotMatch(structuredGemini, /responseSchema:/);
   assert.match(structuredGemini, /AbortSignal\.timeout\(45_000\)/);
+  assert.match(viteConfig, /command === "serve"/);
+  assert.match(viteConfig, /\["GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT_NUMBER"\]/);
+  assert.match(viteConfig, /vars: localGenerationVars/);
   assert.match(compilerConfig, /moralSpecSchema/);
   assert.match(compilerConfig, /premiseCandidatesSchema/);
   assert.match(compilerConfig, /storyGraphSchema/);

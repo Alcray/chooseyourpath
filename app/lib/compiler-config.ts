@@ -520,7 +520,7 @@ export const storyGraphMetaSchema = {
   required: ["title", "parentSummary", "childIntro", "props", "choice", "narrationByBranch", "outline", "reflectionPrompt"],
 } as const;
 
-export const storyGraphBeatsSchema = {
+const storyGraphBeatsStrictSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -530,12 +530,41 @@ export const storyGraphBeatsSchema = {
   required: ["beats", "setupPayoffs"],
 } as const;
 
-export const storyGraphStatesSchema = {
+const storyGraphStatesStrictSchema = {
   type: "object",
   additionalProperties: false,
   properties: { states: storyGraphSchema.properties.states },
   required: ["states"],
 } as const;
+
+/**
+ * Gemini applies a separate complexity budget to response schemas. The two
+ * graph-detail stages are structurally deep enough that duplicating local
+ * cardinality/range rules in responseJsonSchema can make an otherwise valid
+ * request fail before generation starts. Keep the complete shape, required
+ * fields, and enums at the provider boundary; the deterministic graph
+ * validator remains authoritative for counts, ranges, IDs, and semantics.
+ */
+function makeGeminiCompatibleSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(makeGeminiCompatibleSchema);
+  if (!value || typeof value !== "object") return value;
+
+  const compact: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      key === "additionalProperties"
+      || key === "minItems"
+      || key === "maxItems"
+      || key === "minimum"
+      || key === "maximum"
+    ) continue;
+    compact[key] = makeGeminiCompatibleSchema(child);
+  }
+  return compact;
+}
+
+export const storyGraphBeatsSchema = makeGeminiCompatibleSchema(storyGraphBeatsStrictSchema) as object;
+export const storyGraphStatesSchema = makeGeminiCompatibleSchema(storyGraphStatesStrictSchema) as object;
 
 export const semanticReviewSchema = {
   type: "object",

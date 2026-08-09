@@ -168,22 +168,20 @@ export async function POST(request: Request) {
         const graphMeta = metaDraft && typeof metaDraft === "object" && !Array.isArray(metaDraft)
           ? metaDraft as Record<string, unknown>
           : {};
-        const [beatsDraft, statesDraft] = await Promise.all([
-          runStructuredCompilerStage<unknown>({
-            stageLabel: "Causal branch beats",
-            systemInstruction: "Return only the ordered flat beats and setup-to-payoff links requested by the schema. Use every path: common 4–8 beats, constructive 3–6, harmful 3–6, constructive_bridge 1–3, harmful_bridge 1–3, and finale 1–3. Orders begin at one within each path. The common path escalates before the choice; the harmful path has a gentle consequence before repair; every summary visibly follows from the previous beat. Every beat must declare nonempty reads and updates using only the typed state-fact key syntax in the prompt. Map every setup-phase beat to an existing later payoff beat on each branch.",
-            prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}`,
-            responseJsonSchema: storyGraphBeatsSchema,
-            maxOutputTokens: 8_192,
-          }),
-          runStructuredCompilerStage<unknown>({
-            stageLabel: "Typed story states",
-            systemInstruction: "Return exactly four typed states with unique roles initial, constructive_end, harmful_end, and finale_required. Use only the locked character, location, and registered prop IDs. Every state must track every registered prop and separate facts for every locked character, plus explicit relationship state. Unresolved promises are unique snake_case fact IDs, never prose. The initial state's prop condition and holder must exactly match the registered canon. Both branch end states must independently satisfy every finale_required time, location, character, prop condition, holder, required knowledge, relationship, and unresolved-promise field. The compiler will reject mismatches and will never rewrite an end state.",
-            prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}`,
-            responseJsonSchema: storyGraphStatesSchema,
-            maxOutputTokens: 4_096,
-          }),
-        ]);
+        const statesDraft = await runStructuredCompilerStage<unknown>({
+          stageLabel: "Typed story states",
+          systemInstruction: "Return exactly four typed states with unique roles initial, constructive_end, harmful_end, and finale_required. Use the exact locked locationId in every state and no character IDs except the locked characterIds. In every state, characterKnowledge must contain exactly one entry for each locked character ID, propStates must contain exactly one entry for each registered prop ID, relationships may contain only locked character IDs, and each holderId must be a locked character ID or none. Build the initial propStates by mechanically copying every LOCKED STORY META props item: propId equals id, condition equals initialCondition, and holderId equals ownerId, character-for-character. Unresolved promises are unique snake_case fact IDs, never prose. Design finale_required first. Then copy its time, locationId, presentCharacterIds, propStates, relationships, and unresolvedPromises exactly into both branch end states; include every finale-required knowledge fact in the matching character entry of both ends. Never use synonyms for copied condition or relationship status values. The compiler will reject mismatches and will never rewrite an end state.",
+          prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}`,
+          responseJsonSchema: storyGraphStatesSchema,
+          maxOutputTokens: 4_096,
+        });
+        const beatsDraft = await runStructuredCompilerStage<unknown>({
+          stageLabel: "Causal branch beats",
+          systemInstruction: "Return only the ordered flat beats and setup-to-payoff links requested by the schema. Use every path: common 4–8 beats, constructive 3–6, harmful 3–6, constructive_bridge 1–3, harmful_bridge 1–3, and finale 1–3. Orders begin at one within each path. Make common order 1 the only beat anywhere with phase setup; all other common beats must escalate toward the choice. Return exactly one setupPayoffs entry whose setupBeatId is that first beat and whose constructivePayoffBeatId and harmfulPayoffBeatId reference real later beats on their respective path (a shared finale beat may serve both). The harmful path has a gentle consequence before repair; every summary visibly follows from the previous beat. Every beat must declare nonempty reads and updates using only typed state-fact keys that are valid for the locked typed states. Use exact registered prop IDs, exact locked character IDs, exact directed relationship pairs, and only promise IDs present in those states.",
+          prompt: `${graphPrompt}\n\nLOCKED STORY META:\n${JSON.stringify(graphMeta)}\n\nLOCKED TYPED STATES:\n${JSON.stringify(statesDraft)}`,
+          responseJsonSchema: storyGraphBeatsSchema,
+          maxOutputTokens: 8_192,
+        });
         const graphDraft = {
           ...graphMeta,
           ...(beatsDraft && typeof beatsDraft === "object" && !Array.isArray(beatsDraft) ? beatsDraft : {}),
