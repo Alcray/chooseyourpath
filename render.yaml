@@ -16,7 +16,11 @@ services:
     name: wonder-tales
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    # --include=dev is required: Render sets NODE_ENV=production, under which
+    # npm omits devDependencies — and every build tool (vite, typescript,
+    # tailwindcss) lives there. Without this the build fails and no server
+    # starts, which surfaces as `x-render-routing: no-server` 404s.
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
