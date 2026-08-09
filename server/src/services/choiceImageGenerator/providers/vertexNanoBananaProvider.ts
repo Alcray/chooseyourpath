@@ -6,6 +6,7 @@ import type { ChoiceImageGenerator, ChoiceImageRequest } from "../types.js";
 
 const GENERATED_DIR = path.resolve(process.cwd(), "public", "generated");
 const IMAGE_EXTENSIONS = ["png", "jpg", "webp"] as const;
+const GENERATION_TIMEOUT_MS = 45_000;
 
 interface GeminiImageResponse {
   candidates?: {
@@ -30,12 +31,18 @@ export class VertexNanoBananaProvider implements ChoiceImageGenerator {
   constructor(
     private apiKey: string,
     private model: string,
-    projectId: string,
+    projectId: string | undefined,
     location: string
   ) {
-    const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
-    const modelPath = `projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(model)}`;
-    this.endpoint = `https://${host}/v1/${modelPath}:generateContent`;
+    if (projectId) {
+      const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+      const modelPath = `projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(model)}`;
+      this.endpoint = `https://${host}/v1/${modelPath}:generateContent`;
+    } else {
+      // Vertex Express Mode authorization keys are already bound to their
+      // project and use the projectless publishers.models endpoint.
+      this.endpoint = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
+    }
   }
 
   async generate(request: ChoiceImageRequest): Promise<string | null> {
@@ -47,6 +54,7 @@ export class VertexNanoBananaProvider implements ChoiceImageGenerator {
     const res = await fetch(this.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": this.apiKey },
+      signal: AbortSignal.timeout(GENERATION_TIMEOUT_MS),
       body: JSON.stringify({
         contents: [{ role: "USER", parts: [{ text: prompt }] }],
         generationConfig: {

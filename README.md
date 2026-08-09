@@ -27,9 +27,10 @@ To enable real AI story generation, copy `server/.env.example` to `server/.env`
 and set `ANTHROPIC_API_KEY`. Without it, the app runs entirely offline using
 hand-written story templates for all 6 lessons.
 
-To enable generated moral-choice previews, set `VERTEX_API_KEY` and
-`VERTEX_PROJECT_ID` in `server/.env`. Existing Veo deployments need no extra
-configuration: `VEO_API_KEY` and `VEO_PROJECT_ID` are reused automatically.
+To enable generated moral-choice previews, set `VERTEX_API_KEY` in
+`server/.env`. Vertex Express Mode keys work without a project ID; standard
+Vertex keys also need `VERTEX_PROJECT_ID`. Existing Veo deployments need no
+extra configuration because their credentials are reused automatically.
 
 ## Project layout
 

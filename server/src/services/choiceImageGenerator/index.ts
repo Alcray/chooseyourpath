@@ -11,7 +11,7 @@ const vertexLocation = process.env.VERTEX_LOCATION || "global";
 const choiceImageModel = process.env.CHOICE_IMAGE_MODEL || "gemini-3.1-flash-image";
 
 function buildChoiceImageGenerator(): ChoiceImageGenerator {
-  if (!vertexApiKey || !vertexProjectId) return new DisabledChoiceImageProvider();
+  if (!vertexApiKey) return new DisabledChoiceImageProvider();
   return new VertexNanoBananaProvider(vertexApiKey, choiceImageModel, vertexProjectId, vertexLocation);
 }
 

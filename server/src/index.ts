@@ -45,6 +45,6 @@ app.listen(PORT, () => {
   console.log(`Narration: ${narrationGenerator.name}` + (narrationGenerator.name === "silent" ? " (set GOOGLE_APPLICATION_CREDENTIALS to enable Armenian narration audio)" : ""));
   console.log(
     `Choice previews: ${choiceImageGenerator.name}` +
-      (choiceImageGenerator.name === "disabled" ? " (set VERTEX_API_KEY + VERTEX_PROJECT_ID, or reuse VEO_API_KEY + VEO_PROJECT_ID, to enable Nano Banana 2)" : "")
+      (choiceImageGenerator.name === "disabled" ? " (set VERTEX_API_KEY, or reuse VEO_API_KEY, to enable Nano Banana 2)" : "")
   );
 });

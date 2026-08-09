@@ -76,10 +76,13 @@ storyRouter.post("/", async (req, res) => {
         environment: setting.environment,
       }
     );
+    // Scene generation must never wait on optional choice artwork. Start Veo
+    // immediately, then enrich the response with whatever Nano Banana can
+    // produce; a second save updates the stored tree with the image URLs.
+    saveStory(generatedStory, character.bible, setting.environment);
+    pregenerateAllScenes(generatedStory, character.bible, setting.environment);
     const story = await addChoiceImages(generatedStory, character.bible, setting.environment);
-
     saveStory(story, character.bible, setting.environment);
-    pregenerateAllScenes(story, character.bible, setting.environment);
     res.json(stripActions(story));
   } catch (err) {
     if (err instanceof CustomLessonRequiresAiError) {
