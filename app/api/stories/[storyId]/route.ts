@@ -2,9 +2,26 @@ import { and, asc, eq, inArray, lt, or } from "drizzle-orm";
 import { getDb, getRawDb } from "../../../../db";
 import { clips, stories } from "../../../../db/schema";
 import { apiErrorResponse, getMediaBucket, GoogleApiError } from "../../../lib/google";
+import { decodeValidatedProviderVideo } from "../../../lib/provider-media";
 import { CLIP_IDS, baseClipDuration, isClipId } from "../../../lib/story";
 import { validateStoryPackage } from "../../../lib/story-compiler";
-import { getOwnedStory, getStoryClips, requestOwnerId, storyPayload } from "../../../lib/story-store";
+import {
+  LEGACY_STORY_RECOMPILE_MESSAGE,
+  classifyStoryPackageCompatibility,
+} from "../../../lib/story-migrations";
+import {
+  canonicalStoryMediaKey,
+  inspectStoredPlaybackMedia,
+  summarizeCanonicalClipWorkflow,
+} from "../../../lib/story-media";
+import {
+  getOwnedStory,
+  getStoryClips,
+  parseStoredStoryBrief,
+  requestOwnerId,
+  storyPayload,
+  validateStoryPackageMatchesBrief,
+} from "../../../lib/story-store";
 import { getVideoProvider, type ProviderPollResult } from "../../../lib/video-provider";
 
 export const dynamic = "force-dynamic";
@@ -15,14 +32,121 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     const ownerUserId = requestOwnerId(request);
     const story = await getOwnedStory(storyId, ownerUserId);
     if (!story) return Response.json({ error: "Story not found." }, { status: 404 });
+    const brief = parseStoredStoryBrief(story.briefJson);
 
-    let plan;
+    let storedPlan: unknown;
     try {
-      plan = validateStoryPackage(JSON.parse(story.planJson), { requireParentApproval: true });
+      storedPlan = JSON.parse(story.planJson);
     } catch {
       throw new GoogleApiError("The stored story blueprint could not be read.", 422);
     }
-    const videoProvider = getVideoProvider();
+
+    const compatibility = classifyStoryPackageCompatibility(storedPlan);
+    let initiallyStoredClips = await getStoryClips(storyId);
+    if (
+      compatibility.status === "legacy_requires_recompile" ||
+      compatibility.status === "unversioned_requires_recompile"
+    ) {
+      const legacyMediaInspection = await inspectStoredPlaybackMedia(
+        storyId,
+        initiallyStoredClips,
+        compatibility.playablePlan,
+      );
+      if (!legacyMediaInspection.complete) {
+        throw new GoogleApiError(
+          LEGACY_STORY_RECOMPILE_MESSAGE,
+          409,
+          false,
+          "STORY_RECOMPILE_REQUIRED",
+        );
+      }
+      return Response.json(
+        {
+          story: storyPayload(
+            { ...story, status: "ready" },
+            initiallyStoredClips,
+            {
+              plan: compatibility.playablePlan,
+              brief,
+              compatibility: {
+                mode: "playback_only",
+                sourceSchemaVersion: compatibility.sourceSchemaVersion,
+                providerActionsAllowed: false,
+              },
+            },
+          ),
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    if (compatibility.status === "incompatible") {
+      throw new GoogleApiError("The stored story blueprint is incompatible or malformed.", 422);
+    }
+
+    const plan = validateStoryPackage(compatibility.storyPackage, { requireParentApproval: true });
+    validateStoryPackageMatchesBrief(plan, brief);
+    const initialWorkflow = summarizeCanonicalClipWorkflow(initiallyStoredClips, plan);
+    if (!initialWorkflow) {
+      throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
+    }
+    const mediaInspection = await inspectStoredPlaybackMedia(storyId, initiallyStoredClips, plan);
+    const playbackMediaReady = mediaInspection.complete;
+    const repairedMissingMedia = mediaInspection.missingSlots.length > 0;
+    if (repairedMissingMedia) {
+      const repairTime = Date.now();
+      const d1 = getRawDb();
+      await d1.batch(
+        mediaInspection.missingSlots.map((slot, index) => {
+          const clip = initialWorkflow.bySlot.get(slot)!;
+          return d1
+            .prepare(
+              "UPDATE clips SET status = ?, provider_job_id = NULL, extension_count = 0, r2_key = NULL, mime_type = NULL, error_message = ?, updated_at = ? WHERE id = ? AND story_id = ? AND slot = ? AND status = ? AND updated_at = ?",
+            )
+            .bind(
+              "failed",
+              "The stored video is missing or invalid. Retry this clip.",
+              repairTime + index,
+              clip.id,
+              storyId,
+              slot,
+              "ready",
+              clip.updatedAt,
+            );
+        }),
+      );
+      initiallyStoredClips = await getStoryClips(storyId);
+    }
+    if (playbackMediaReady) {
+      if (story.status !== "ready") {
+        await getDb().update(stories).set({ status: "ready", updatedAt: Date.now() }).where(eq(stories.id, storyId));
+      }
+      return Response.json(
+        { story: storyPayload({ ...story, status: "ready" }, initiallyStoredClips, { plan, brief }) },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    const repairedWorkflow = summarizeCanonicalClipWorkflow(initiallyStoredClips, plan);
+    if (!repairedWorkflow) {
+      throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
+    }
+    if (repairedMissingMedia) {
+      const updatedAt = Date.now();
+      await getDb()
+        .update(stories)
+        .set({ status: repairedWorkflow.status, updatedAt })
+        .where(eq(stories.id, storyId));
+      return Response.json(
+        {
+          story: storyPayload(
+            { ...story, status: repairedWorkflow.status, updatedAt },
+            initiallyStoredClips,
+            { plan, brief },
+          ),
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
 
     const db = getDb();
     const d1 = getRawDb();
@@ -50,6 +174,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
       .limit(1);
 
     if (nextClip && isClipId(nextClip.slot)) {
+      const videoProvider = getVideoProvider();
       const planClip = plan.clips.find((clip) => clip.id === nextClip.slot);
       if (!planClip) throw new GoogleApiError(`The ${nextClip.slot} prompt is missing.`, 422);
       const extensions = Array.isArray(planClip.extensions) ? planClip.extensions : [];
@@ -119,6 +244,11 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
               result = { done: true, error: message };
             }
           }
+          const providerResultVideo = result.done && result.video ? result.video : null;
+          const completedVideo = providerResultVideo
+            ? decodeValidatedProviderVideo(providerResultVideo, (video) => videoProvider.decode(video))
+            : null;
+
           if (!result.done) {
             await d1
               .prepare(
@@ -135,7 +265,23 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
                 pollClaimTime,
               )
               .run();
-          } else if (result.video && nextClip.extensionCount < extensions.length) {
+          } else if (providerResultVideo && !completedVideo) {
+            await d1
+              .prepare(
+                "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
+              )
+              .bind(
+                "failed",
+                "The generation provider returned an invalid video. Please retry this clip.",
+                Date.now(),
+                nextClip.id,
+                nextClip.status,
+                nextClip.providerJobId,
+                nextClip.extensionCount,
+                pollClaimTime,
+              )
+              .run();
+          } else if (completedVideo && nextClip.extensionCount < extensions.length) {
             const extension = extensions[nextClip.extensionCount];
             const extensionClaimTime = Date.now();
             const extensionClaim = await d1
@@ -154,13 +300,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
               .run();
             if (Number(extensionClaim.meta.changes ?? 0) === 0) {
               return Response.json(
-                { story: storyPayload(story, await getStoryClips(storyId)) },
+                { story: storyPayload(story, await getStoryClips(storyId), { plan, brief }) },
                 { headers: { "Cache-Control": "no-store" } },
               );
             }
 
             try {
-              const operationName = await videoProvider.extend(result.video, extension.prompt);
+              const operationName = await videoProvider.extend(completedVideo.video, extension.prompt);
               await d1
                 .prepare(
                   "UPDATE clips SET status = ?, provider_job_id = ?, extension_count = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
@@ -200,7 +346,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
                 )
                 .run();
             }
-          } else if (result.video) {
+          } else if (completedVideo) {
             const claimTime = Date.now();
             const claim = await d1
               .prepare(
@@ -218,23 +364,24 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
               .run();
             if ((claim.meta.changes ?? 0) === 0) {
               return Response.json(
-                { story: storyPayload(story, await getStoryClips(storyId)) },
+                { story: storyPayload(story, await getStoryClips(storyId), { plan, brief }) },
                 { headers: { "Cache-Control": "no-store" } },
               );
             }
 
-            const r2Key = `stories/${storyId}/${nextClip.slot}.mp4`;
-            let videoBytes: Uint8Array | null = null;
+            const r2Key = canonicalStoryMediaKey(storyId, nextClip.slot);
             try {
-              videoBytes = videoProvider.decode(result.video);
-            } catch {
+              await getMediaBucket().put(r2Key, completedVideo.bytes, {
+                httpMetadata: { contentType: "video/mp4", contentDisposition: "inline" },
+              });
               await d1
                 .prepare(
-                  "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
+                  "UPDATE clips SET status = ?, r2_key = ?, mime_type = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
                 )
                 .bind(
-                  "failed",
-                  "The generated clip could not be decoded. Please retry it.",
+                  "ready",
+                  r2Key,
+                  "video/mp4",
                   Date.now(),
                   nextClip.id,
                   "ingesting",
@@ -243,49 +390,25 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
                   claimTime,
                 )
                 .run();
-            }
-
-            if (videoBytes) {
-              try {
-                await getMediaBucket().put(r2Key, videoBytes, {
-                  httpMetadata: { contentType: result.video.mimeType, contentDisposition: "inline" },
-                });
-                await d1
-                  .prepare(
-                    "UPDATE clips SET status = ?, r2_key = ?, mime_type = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
-                  )
-                  .bind(
-                    "ready",
-                    r2Key,
-                    result.video.mimeType,
-                    Date.now(),
-                    nextClip.id,
-                    "ingesting",
-                    nextClip.providerJobId,
-                    nextClip.extensionCount,
-                    claimTime,
-                  )
-                  .run();
-              } catch (storageError) {
-                const retryableStorage = !(storageError instanceof GoogleApiError) || storageError.retryable;
-                await d1
-                  .prepare(
-                    "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
-                  )
-                  .bind(
-                    retryableStorage ? "rendering" : "failed",
-                    retryableStorage
-                      ? "The clip finished, but secure saving was interrupted. Retrying automatically."
-                      : "Generated-media storage is unavailable. Please retry after it is configured.",
-                    Date.now(),
-                    nextClip.id,
-                    "ingesting",
-                    nextClip.providerJobId,
-                    nextClip.extensionCount,
-                    claimTime,
-                  )
-                  .run();
-              }
+            } catch (storageError) {
+              const retryableStorage = !(storageError instanceof GoogleApiError) || storageError.retryable;
+              await d1
+                .prepare(
+                  "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND provider_job_id = ? AND extension_count = ? AND updated_at = ?",
+                )
+                .bind(
+                  retryableStorage ? "rendering" : "failed",
+                  retryableStorage
+                    ? "The clip finished, but secure saving was interrupted. Retrying automatically."
+                    : "Generated-media storage is unavailable. Please retry after it is configured.",
+                  Date.now(),
+                  nextClip.id,
+                  "ingesting",
+                  nextClip.providerJobId,
+                  nextClip.extensionCount,
+                  claimTime,
+                )
+                .run();
             }
           } else {
             await d1
@@ -309,17 +432,14 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     }
 
     const storedClips = await getStoryClips(storyId);
-    const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
-    const activeCount = storedClips.filter((clip) =>
-      clip.status === "starting" || clip.status === "rendering" || clip.status === "extension_retry" || clip.status === "extending" || clip.status === "ingesting"
-    ).length;
-    const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
-    const status = readyCount === CLIP_IDS.length ? "ready" : activeCount > 0 ? "rendering" : failedCount > 0 ? "partial" : "starting";
+    const workflow = summarizeCanonicalClipWorkflow(storedClips, plan);
+    if (!workflow) throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
+    const { status } = workflow;
     await db.update(stories).set({ status, updatedAt: Date.now() }).where(eq(stories.id, storyId));
     const refreshedStory = { ...story, status, updatedAt: Date.now() };
 
     return Response.json(
-      { story: storyPayload(refreshedStory, storedClips) },
+      { story: storyPayload(refreshedStory, storedClips, { plan, brief }) },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

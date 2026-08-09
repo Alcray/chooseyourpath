@@ -32,7 +32,16 @@ The local approval-boundary test uses local D1 and no provider quota:
 
 ```bash
 npm run test:approval-live
+npm run test:compatibility-live
 ```
+
+To exercise native playback with an existing completed schema `1.0` story, provide its local story ID explicitly:
+
+```bash
+TEST_LEGACY_READY_STORY_ID=<story-uuid> npx playwright test tests/e2e/legacy-media-live.spec.ts
+```
+
+That opt-in check selects the supplied record, decodes all four real files, exercises native pause/resume on both choices and the shared ending, and accelerates scene boundaries with synthetic `ended` events. It does not claim natural transition latency or mathematically gapless playback.
 
 Provider live tests are opt-in because they may use quota:
 

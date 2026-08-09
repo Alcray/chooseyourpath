@@ -36,6 +36,12 @@ python3 .agents/skills/moral-story-engine/scripts/validate_branch_convergence.py
 python3 .agents/skills/moral-story-engine/scripts/inspect_prompt_changes.py
 ```
 
+With the local preview running, schema-compatibility changes must also run:
+
+```bash
+npm run test:compatibility-live
+```
+
 For model or route changes, also run the opt-in live tests when credentials and quota are intentionally available. Never expose or commit API keys.
 
 ## Release blockers

@@ -3,16 +3,25 @@ import { getDb, getRawDb } from "../../../db";
 import { blueprints, stories } from "../../../db/schema";
 import { apiErrorResponse, GoogleApiError } from "../../lib/google";
 import {
-  AGE_BANDS,
-  CHARACTER_PAIRS,
   CLIP_IDS,
-  LANGUAGES,
-  SETTINGS,
   baseClipDuration,
   type StoryBrief,
 } from "../../lib/story";
-import { approveStoryPackageForRender } from "../../lib/story-compiler";
-import { getStoryClips, requestOwnerId, storyPayload } from "../../lib/story-store";
+import { approveStoryPackageForRender, validateStoryPackage } from "../../lib/story-compiler";
+import {
+  LEGACY_BLUEPRINT_RECOMPILE_MESSAGE,
+  classifyStoryPackageCompatibility,
+} from "../../lib/story-migrations";
+import { inspectStoredPlaybackMedia, summarizeCanonicalClipWorkflow } from "../../lib/story-media";
+import {
+  getStoryClips,
+  parseStoredStoryBrief,
+  requestOwnerId,
+  storyPayload,
+  type StoredStory,
+  validateStoryPackageMatchesBrief,
+  validateStoredStoryBrief,
+} from "../../lib/story-store";
 import { getVideoProvider } from "../../lib/video-provider";
 
 const BLUEPRINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -54,42 +63,6 @@ function validateBody(value: unknown): StartBody {
   };
 }
 
-function boundedString(value: unknown, name: string, min: number, max: number) {
-  if (typeof value !== "string") throw new GoogleApiError(`The blueprint has an invalid ${name}.`, 422);
-  const result = value.trim();
-  if (result.length < min || result.length > max) {
-    throw new GoogleApiError(`The blueprint has an invalid ${name}.`, 422);
-  }
-  return result;
-}
-
-function validateStoredBrief(value: unknown): StoryBrief {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new GoogleApiError("The stored story brief is invalid.", 422);
-  }
-  const brief = value as Record<string, unknown>;
-  const lesson = boundedString(brief.lesson, "lesson", 8, 500);
-  const characterPairId = boundedString(brief.characterPairId, "character pair", 1, 50);
-  const settingId = boundedString(brief.settingId, "setting", 1, 50);
-  const ageBand = boundedString(brief.ageBand, "age band", 1, 20);
-  const language = boundedString(brief.language, "language", 1, 30);
-
-  if (!CHARACTER_PAIRS.some((pair) => pair.id === characterPairId)) {
-    throw new GoogleApiError("The stored character pair is invalid.", 422);
-  }
-  if (!SETTINGS.some((setting) => setting.id === settingId)) {
-    throw new GoogleApiError("The stored setting is invalid.", 422);
-  }
-  if (!AGE_BANDS.some((age) => age.id === ageBand)) {
-    throw new GoogleApiError("The stored age band is invalid.", 422);
-  }
-  if (!LANGUAGES.some((option) => option.id === language)) {
-    throw new GoogleApiError("The stored language is invalid.", 422);
-  }
-
-  return { lesson, characterPairId, settingId, ageBand, language };
-}
-
 async function existingStory(ownerUserId: string, idempotencyKey: string) {
   const [story] = await getDb()
     .select()
@@ -97,6 +70,108 @@ async function existingStory(ownerUserId: string, idempotencyKey: string) {
     .where(and(eq(stories.ownerUserId, ownerUserId), eq(stories.idempotencyKey, idempotencyKey)))
     .limit(1);
   return story ?? null;
+}
+
+async function compatibleStoryPayload(story: StoredStory) {
+  const storedClips = await getStoryClips(story.id);
+  const brief = parseStoredStoryBrief(story.briefJson);
+  let storedPlan: unknown;
+  try {
+    storedPlan = JSON.parse(story.planJson);
+  } catch {
+    throw new GoogleApiError("The stored story blueprint could not be read.", 422);
+  }
+
+  const compatibility = classifyStoryPackageCompatibility(storedPlan);
+  try {
+    if (compatibility.status === "current") {
+      const plan = validateStoryPackage(compatibility.storyPackage, { requireParentApproval: true });
+      validateStoryPackageMatchesBrief(plan, brief);
+      const workflow = summarizeCanonicalClipWorkflow(storedClips, plan);
+      if (!workflow) throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
+      const mediaInspection = await inspectStoredPlaybackMedia(story.id, storedClips, plan);
+      if (mediaInspection.missingSlots.length > 0) {
+        const unavailableSlots = new Set(mediaInspection.missingSlots);
+        const unavailableClips = storedClips.map((clip) => ({
+          ...clip,
+          ...(unavailableSlots.has(clip.slot as (typeof CLIP_IDS)[number])
+            ? {
+                status: "failed",
+                r2Key: null,
+                errorMessage: "The stored video is unavailable and needs a retry.",
+              }
+            : {}),
+        }));
+        const unavailableStatus = workflow.status === "ready" ? "partial" : workflow.status;
+        return storyPayload({ ...story, status: unavailableStatus }, unavailableClips, { plan, brief });
+      }
+      return storyPayload(
+        { ...story, status: mediaInspection.complete ? "ready" : workflow.status },
+        storedClips,
+        { plan, brief },
+      );
+    }
+    if (
+      compatibility.status === "legacy_requires_recompile" ||
+      compatibility.status === "unversioned_requires_recompile"
+    ) {
+      const mediaInspection = await inspectStoredPlaybackMedia(
+        story.id,
+        storedClips,
+        compatibility.playablePlan,
+      );
+      const playbackReady = mediaInspection.complete;
+      return storyPayload(
+        playbackReady ? { ...story, status: "ready" } : story,
+        storedClips,
+        {
+          plan: compatibility.playablePlan,
+          brief,
+          compatibility: playbackReady
+            ? {
+                mode: "playback_only",
+                sourceSchemaVersion: compatibility.sourceSchemaVersion,
+                providerActionsAllowed: false,
+              }
+            : {
+                mode: "recompile_required",
+                sourceSchemaVersion: compatibility.sourceSchemaVersion,
+                targetSchemaVersion: "1.1",
+                providerActionsAllowed: false,
+              },
+        },
+      );
+    }
+  } catch (error) {
+    if (error instanceof GoogleApiError) throw error;
+    throw new GoogleApiError("The stored story record could not be read.", 422);
+  }
+  throw new GoogleApiError("The stored story blueprint is incompatible or malformed.", 422);
+}
+
+function normalizedApprovedPlanFingerprint(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const normalized = structuredClone(value) as Record<string, unknown>;
+  delete normalized.parentReview;
+  return JSON.stringify(normalized);
+}
+
+function assertIdempotentRequestMatches(
+  payload: Awaited<ReturnType<typeof compatibleStoryPayload>>,
+  brief: StoryBrief,
+  approvedPlan: unknown,
+) {
+  if (
+    JSON.stringify(payload.brief) !== JSON.stringify(brief) ||
+    normalizedApprovedPlanFingerprint(payload.plan) !== normalizedApprovedPlanFingerprint(approvedPlan)
+  ) {
+    throw new GoogleApiError(
+      "This request key was already used for a different story blueprint.",
+      409,
+      false,
+      "IDEMPOTENCY_KEY_CONFLICT",
+    );
+  }
 }
 
 export async function GET(request: Request) {
@@ -110,7 +185,7 @@ export async function GET(request: Request) {
       .limit(1);
 
     return Response.json(
-      { story: story ? storyPayload(story, await getStoryClips(story.id)) : null },
+      { story: story ? await compatibleStoryPayload(story) : null },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
@@ -128,10 +203,6 @@ export async function POST(request: Request) {
       throw new GoogleApiError("Send a valid story request.", 400);
     }
     const body = validateBody(requestBody);
-    const duplicate = await existingStory(ownerUserId, body.idempotencyKey);
-    if (duplicate) {
-      return Response.json({ story: storyPayload(duplicate, await getStoryClips(duplicate.id)) });
-    }
 
     const now = Date.now();
     const db = getDb();
@@ -158,11 +229,41 @@ export async function POST(request: Request) {
     } catch {
       throw new GoogleApiError("The stored blueprint could not be read. Create a new blueprint.", 422);
     }
-    const brief = validateStoredBrief(briefValue);
-    const plan = approveStoryPackageForRender(planValue, {
+    const brief = validateStoredStoryBrief(briefValue);
+    const compatibility = classifyStoryPackageCompatibility(planValue);
+    if (
+      compatibility.status === "legacy_requires_recompile" ||
+      compatibility.status === "unversioned_requires_recompile"
+    ) {
+      throw new GoogleApiError(
+        LEGACY_BLUEPRINT_RECOMPILE_MESSAGE,
+        409,
+        false,
+        "BLUEPRINT_RECOMPILE_REQUIRED",
+      );
+    }
+    if (compatibility.status === "incompatible") {
+      throw new GoogleApiError("The stored blueprint is incompatible or malformed.", 422);
+    }
+    const plan = approveStoryPackageForRender(compatibility.storyPackage, {
       sensitiveTopicAcknowledged: body.sensitiveTopicAcknowledged,
       reviewedAt: now,
     });
+    validateStoryPackageMatchesBrief(plan, brief);
+    const duplicate = await existingStory(ownerUserId, body.idempotencyKey);
+    if (duplicate) {
+      const duplicatePayload = await compatibleStoryPayload(duplicate);
+      if (duplicatePayload.compatibility?.mode === "recompile_required") {
+        throw new GoogleApiError(
+          LEGACY_BLUEPRINT_RECOMPILE_MESSAGE,
+          409,
+          false,
+          "STORY_RECOMPILE_REQUIRED",
+        );
+      }
+      assertIdempotentRequestMatches(duplicatePayload, brief, plan);
+      return Response.json({ story: duplicatePayload });
+    }
     const videoProvider = getVideoProvider();
 
     const storyId = crypto.randomUUID();
@@ -213,7 +314,17 @@ export async function POST(request: Request) {
     if (!acquired) {
       const racedDuplicate = await existingStory(ownerUserId, body.idempotencyKey);
       if (racedDuplicate) {
-        return Response.json({ story: storyPayload(racedDuplicate, await getStoryClips(racedDuplicate.id)) });
+        const racedPayload = await compatibleStoryPayload(racedDuplicate);
+        if (racedPayload.compatibility?.mode === "recompile_required") {
+          throw new GoogleApiError(
+            LEGACY_BLUEPRINT_RECOMPILE_MESSAGE,
+            409,
+            false,
+            "STORY_RECOMPILE_REQUIRED",
+          );
+        }
+        assertIdempotentRequestMatches(racedPayload, brief, plan);
+        return Response.json({ story: racedPayload });
       }
       throw new GoogleApiError(
         "The story request could not be started. Please try again.",
@@ -249,24 +360,15 @@ export async function POST(request: Request) {
     await d1.batch(updates);
 
     const storedClips = await getStoryClips(storyId);
-    const failedCount = storedClips.filter((clip) => clip.status === "failed").length;
-    const activeCount = storedClips.filter((clip) =>
-      clip.status === "starting" || clip.status === "rendering" || clip.status === "extension_retry" || clip.status === "extending" || clip.status === "ingesting"
-    ).length;
-    const readyCount = storedClips.filter((clip) => clip.status === "ready").length;
-    const status = readyCount === CLIP_IDS.length
-      ? "ready"
-      : activeCount > 0
-        ? "rendering"
-        : failedCount > 0
-          ? "failed"
-          : "starting";
+    const workflow = summarizeCanonicalClipWorkflow(storedClips, plan);
+    if (!workflow) throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
+    const { status } = workflow;
     await db
       .update(stories)
       .set({ status, updatedAt: Date.now() })
       .where(eq(stories.id, storyId));
     const [story] = await db.select().from(stories).where(eq(stories.id, storyId)).limit(1);
-    return Response.json({ story: storyPayload(story, storedClips) }, { status: 202 });
+    return Response.json({ story: storyPayload(story, storedClips, { plan, brief }) }, { status: 202 });
   } catch (error) {
     return apiErrorResponse(error);
   }

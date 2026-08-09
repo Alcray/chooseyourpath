@@ -95,7 +95,7 @@ export async function pollVeoClip(operationName: string) {
 
   return {
     done: true as const,
-    video: { base64: video.bytesBase64Encoded, mimeType: video.mimeType ?? "video/mp4" },
+    video: { base64: video.bytesBase64Encoded, mimeType: video.mimeType ?? "" },
   };
 }
 

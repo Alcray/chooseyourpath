@@ -10,9 +10,13 @@ SENSITIVE_PREFIXES = (
     "app/lib/compiler-config.ts",
     "app/lib/gemini-structured.ts",
     "app/lib/story-compiler.ts",
+    "app/lib/story-migrations.ts",
     "app/lib/video-provider.ts",
     "app/lib/veo.ts",
     "app/api/plan/route.ts",
+    "app/api/stories/route.ts",
+    "app/api/stories/[storyId]/route.ts",
+    "app/api/stories/[storyId]/retry/route.ts",
 )
 EVAL_PREFIXES = ("tests/", ".agents/skills/moral-story-engine/")
 

@@ -95,7 +95,7 @@
   "continuitySeed": 1993076562,
   "canon": {
     "characterIds": ["pip_fox_v1", "momo_rabbit_v1"],
-    "characterBible": "Pip is a small orange fox with a cream muzzle, kind brown eyes, and a forest-green scarf. Momo is a small sky-blue rabbit with pink inner ears and a mustard-yellow vest. Both have rounded child-friendly proportions.",
+    "characterBible": "Pip is a small orange fox with a cream muzzle, large kind brown eyes, and a knitted forest-green scarf. Momo is a small sky-blue rabbit with pink inner ears, round dark-blue eyes, and a mustard-yellow vest. Pip is thoughtful and energetic; Momo is gentle and observant. Both have rounded child-friendly proportions.",
     "locationId": "riverside-garden",
     "locationBible": "A bright riverside community garden with stepping stones, vegetable beds, a tiny wooden bridge, soft moving water, and fresh early-evening light.",
     "props": [

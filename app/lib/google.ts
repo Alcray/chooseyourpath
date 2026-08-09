@@ -82,7 +82,10 @@ export async function googleJson<T>(
 
 export function apiErrorResponse(error: unknown) {
   if (error instanceof GoogleApiError) {
-    return Response.json({ error: error.message }, { status: error.status });
+    return Response.json(
+      { error: error.message, ...(error.code ? { code: error.code } : {}) },
+      { status: error.status },
+    );
   }
 
   const message = error instanceof Error ? error.message : "Unexpected generation error.";

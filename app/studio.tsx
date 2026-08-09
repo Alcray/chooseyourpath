@@ -23,6 +23,9 @@ type JobStatus = "waiting" | "starting" | "rendering" | "extension_retry" | "ext
 type ClipJob = { status: JobStatus; extensionCount: number; error?: string };
 type JobMap = Record<ClipId, ClipJob>;
 type VideoMap = Partial<Record<ClipId, string>>;
+type StoryCompatibility =
+  | { mode: "playback_only"; sourceSchemaVersion: "1.0" | null; providerActionsAllowed: false }
+  | { mode: "recompile_required"; sourceSchemaVersion: "1.0" | null; targetSchemaVersion: "1.1"; providerActionsAllowed: false };
 
 type ServerStory = {
   id: string;
@@ -30,6 +33,7 @@ type ServerStory = {
   createdAt: number;
   plan: StoryPlan;
   brief: StoryBrief;
+  compatibility?: StoryCompatibility;
   clips: Array<{
     slot: ClipId;
     status: "starting" | "rendering" | "extension_retry" | "extending" | "ingesting" | "ready" | "failed";
@@ -44,12 +48,28 @@ type SavedGeneration = {
   plan: StoryPlan;
   brief: StoryBrief;
   startedAt: number;
+  status?: string;
+  compatibility?: StoryCompatibility;
 };
 
 type PendingStart = {
   blueprintId: string;
   idempotencyKey: string;
 };
+
+type ApiErrorPayload = { error?: string; code?: string };
+
+class StudioApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "StudioApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 const GENERATION_STORAGE_KEY = "kindpath-generation";
 const PENDING_START_STORAGE_KEY = "kindpath-pending-start";
@@ -187,20 +207,55 @@ async function apiRequest<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const payload = (await response.json()) as T & { error?: string };
-  if (!response.ok || payload.error) throw new Error(payload.error ?? "The request could not be completed.");
+  const payload = (await response.json()) as T & ApiErrorPayload;
+  if (!response.ok || payload.error) {
+    throw new StudioApiError(
+      payload.error ?? "The request could not be completed.",
+      response.status,
+      payload.code,
+    );
+  }
   return payload;
+}
+
+function isStoryRecompileError(error: unknown): error is StudioApiError {
+  return error instanceof StudioApiError && error.code === "STORY_RECOMPILE_REQUIRED";
+}
+
+function isBlueprintRecompileError(error: unknown): error is StudioApiError {
+  return error instanceof StudioApiError && error.code === "BLUEPRINT_RECOMPILE_REQUIRED";
+}
+
+function recoverableSourceSchemaVersion(plan: StoryPlan): "1.0" | null {
+  const compiler = (plan as unknown as { compiler?: { schemaVersion?: unknown } }).compiler;
+  return compiler?.schemaVersion === "1.0" ? "1.0" : null;
 }
 
 function isSavedGeneration(value: unknown): value is SavedGeneration {
   const session = value as SavedGeneration;
+  const now = Date.now();
+  const clipIds = Array.isArray(session?.plan?.clips)
+    ? session.plan.clips.map((clip) => clip?.id)
+    : [];
   return Boolean(
     session &&
-      session.storyId &&
-      session.plan &&
-      session.brief &&
-      Array.isArray(session.plan.clips) &&
-      Date.now() - session.startedAt < 7 * 24 * 60 * 60 * 1000,
+      typeof session.storyId === "string" &&
+      /^[0-9a-f-]{36}$/i.test(session.storyId) &&
+      typeof session.plan?.title === "string" &&
+      typeof session.plan?.childIntro === "string" &&
+      typeof session.plan?.choiceQuestion === "string" &&
+      clipIds.length === CLIP_IDS.length &&
+      new Set(clipIds).size === CLIP_IDS.length &&
+      CLIP_IDS.every((id) => clipIds.includes(id)) &&
+      typeof session.brief?.lesson === "string" &&
+      typeof session.brief?.characterPairId === "string" &&
+      typeof session.brief?.settingId === "string" &&
+      typeof session.brief?.ageBand === "string" &&
+      typeof session.brief?.language === "string" &&
+      Number.isFinite(session.startedAt) &&
+      session.startedAt > 0 &&
+      session.startedAt <= now + 5 * 60 * 1000 &&
+      now - session.startedAt < 7 * 24 * 60 * 60 * 1000,
   );
 }
 
@@ -228,9 +283,11 @@ export function StoryStudio() {
   const [seamlessTransition, setSeamlessTransition] = useState(false);
   const [mediaErrors, setMediaErrors] = useState<Partial<Record<ClipId, string>>>({});
   const [sensitiveTopicAcknowledged, setSensitiveTopicAcknowledged] = useState(false);
+  const [recoveryAnnouncement, setRecoveryAnnouncement] = useState("");
 
   const pollingRef = useRef(false);
   const pollingVersionRef = useRef(0);
+  const recoveryVersionRef = useRef(0);
   const videoRefs = useRef<Partial<Record<ClipId, HTMLVideoElement | null>>>({});
   const visibleClipRef = useRef<ClipId>("opening");
   const pendingTransitionRef = useRef<ClipId | null>(null);
@@ -241,20 +298,25 @@ export function StoryStudio() {
   const firstChoiceRef = useRef<HTMLButtonElement | null>(null);
   const completionActionRef = useRef<HTMLButtonElement | null>(null);
   const recoveryActionRef = useRef<HTMLButtonElement | null>(null);
+  const recompileActionRef = useRef<HTMLButtonElement | null>(null);
+  const lessonInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    const recoveryVersion = ++recoveryVersionRef.current;
+    const recoveryIsCurrent = () => !cancelled && recoveryVersionRef.current === recoveryVersion;
 
     void (async () => {
       await Promise.resolve();
+      let localSaved: SavedGeneration | null = null;
       try {
         const raw = localStorage.getItem(GENERATION_STORAGE_KEY);
-        const localSaved = raw ? (JSON.parse(raw) as unknown) : null;
-        if (isSavedGeneration(localSaved)) {
-          if (!cancelled) setSavedGeneration(localSaved);
-          return;
+        const storedValue = raw ? (JSON.parse(raw) as unknown) : null;
+        if (isSavedGeneration(storedValue)) {
+          localSaved = storedValue;
+          if (recoveryIsCurrent()) setSavedGeneration(storedValue);
         }
-        if (raw) localStorage.removeItem(GENERATION_STORAGE_KEY);
+        if (raw && !localSaved) localStorage.removeItem(GENERATION_STORAGE_KEY);
       } catch {
         localStorage.removeItem(GENERATION_STORAGE_KEY);
       }
@@ -262,13 +324,23 @@ export function StoryStudio() {
       try {
         const response = await fetch("/api/stories", { cache: "no-store" });
         const payload = (await response.json()) as { story?: ServerStory | null };
-        if (!response.ok || !payload.story || cancelled) return;
+        if (!response.ok || !recoveryIsCurrent()) return;
+        if (!payload.story) {
+          if (localSaved) {
+            localStorage.removeItem(GENERATION_STORAGE_KEY);
+            setSavedGeneration(null);
+          }
+          return;
+        }
         const recovered: SavedGeneration = {
           storyId: payload.story.id,
           plan: payload.story.plan,
           brief: payload.story.brief,
           startedAt: payload.story.createdAt ?? Date.now(),
+          status: payload.story.status,
+          compatibility: payload.story.compatibility,
         };
+        if (!recoveryIsCurrent()) return;
         localStorage.setItem(GENERATION_STORAGE_KEY, JSON.stringify(recovered));
         setSavedGeneration(recovered);
       } catch {
@@ -302,6 +374,12 @@ export function StoryStudio() {
     else if (playback === "choice") firstChoiceRef.current?.focus();
     else if (playback === "complete") completionActionRef.current?.focus();
   }, [playback, playbackNeedsGesture]);
+
+  useEffect(() => {
+    if (stage === "brief" && savedGeneration?.compatibility?.mode === "recompile_required") {
+      recompileActionRef.current?.focus();
+    }
+  }, [savedGeneration?.compatibility?.mode, stage]);
 
   const currentStep = { brief: 1, blueprint: 2, generating: 3, player: 4 }[stage];
   const selectedPair = getCharacterPair(brief.characterPairId);
@@ -345,8 +423,11 @@ export function StoryStudio() {
   const generationProgressPercent = totalGenerationUnits > 0
     ? Math.round((finishedGenerationUnits / totalGenerationUnits) * 100)
     : 0;
+  const generationPlaybackMediaReady = CLIP_IDS.every((clipId) => Boolean(videoUrls[clipId]));
+  const generationPlaybackMediaIncomplete = readyCount === CLIP_IDS.length && !generationPlaybackMediaReady;
   const playbackBufferReady = bufferedClips.length === CLIP_IDS.length;
   const playbackStartAvailable = Boolean(videoUrls.opening);
+  const storyLanguage = brief.language === "Armenian" ? "hy" : "en";
   const failedMediaClip = CLIP_IDS.find((clipId) => mediaErrors[clipId]);
   const preStartTransitionPaused = !playbackStarted && pendingClipId !== null && playbackNeedsGesture;
 
@@ -566,6 +647,10 @@ export function StoryStudio() {
     setPlayback(clipId);
 
     if (previousClipId !== clipId) videoRefs.current[previousClipId]?.pause();
+    if (clipId === "opening") {
+      warmClip("positive");
+      warmClip("negative");
+    }
   }
 
   function handleClipEnded(clipId: ClipId) {
@@ -615,16 +700,63 @@ export function StoryStudio() {
     playClip("opening");
   }
 
-  function updateBrief<K extends keyof StoryBrief>(key: K, value: StoryBrief[K]) {
-    setBrief((current) => ({ ...current, [key]: value }));
+  function invalidateInitialRecovery() {
+    recoveryVersionRef.current += 1;
   }
 
-  function persistGeneration(storyId: string, planValue: StoryPlan, briefValue: StoryBrief, startedAt: number) {
+  function transitionToRecompileRequired(
+    storyId: string,
+    planValue: StoryPlan,
+    briefValue: StoryBrief,
+    startedAt: number,
+    message: string,
+  ) {
+    invalidateInitialRecovery();
     const saved: SavedGeneration = {
       storyId,
       plan: planValue,
       brief: briefValue,
       startedAt,
+      status: "recompile_required",
+      compatibility: {
+        mode: "recompile_required",
+        sourceSchemaVersion: recoverableSourceSchemaVersion(planValue),
+        targetSchemaVersion: "1.1",
+        providerActionsAllowed: false,
+      },
+    };
+    localStorage.setItem(GENERATION_STORAGE_KEY, JSON.stringify(saved));
+    setSavedGeneration(saved);
+    setBrief(briefValue);
+    setPlan(null);
+    setBlueprintId(null);
+    setVideoUrls({});
+    setJobs(emptyJobs());
+    setError("");
+    setIsGenerating(false);
+    setRecoveryAnnouncement(message);
+    setStage("brief");
+  }
+
+  function updateBrief<K extends keyof StoryBrief>(key: K, value: StoryBrief[K]) {
+    setBrief((current) => ({ ...current, [key]: value }));
+  }
+
+  function persistGeneration(
+    storyId: string,
+    planValue: StoryPlan,
+    briefValue: StoryBrief,
+    startedAt: number,
+    status?: string,
+    compatibility?: StoryCompatibility,
+  ) {
+    const saved: SavedGeneration = {
+      storyId,
+      plan: planValue,
+      brief: briefValue,
+      startedAt,
+      ...(status ? { status } : {}),
+      ...(compatibility ? { compatibility } : {}),
     };
     localStorage.setItem(GENERATION_STORAGE_KEY, JSON.stringify(saved));
     setSavedGeneration(saved);
@@ -660,7 +792,9 @@ export function StoryStudio() {
 
   async function createBlueprint(event: FormEvent) {
     event.preventDefault();
+    invalidateInitialRecovery();
     setError("");
+    setRecoveryAnnouncement("");
     setIsPlanning(true);
     setPlanningStageIndex(0);
     setVideoUrls({});
@@ -683,6 +817,7 @@ export function StoryStudio() {
 
   async function pollStory(storyId: string, planValue: StoryPlan, briefValue: StoryBrief, startedAt: number) {
     if (pollingRef.current) return;
+    invalidateInitialRecovery();
     pollingRef.current = true;
     const pollingVersion = ++pollingVersionRef.current;
     setError("");
@@ -697,15 +832,31 @@ export function StoryStudio() {
 
     try {
       for (let attempt = 0; attempt < 300; attempt += 1) {
-        let payload: { story?: ServerStory; error?: string };
+        let payload: { story?: ServerStory; error?: string; code?: string };
         try {
           const response = await fetch(`/api/stories/${storyId}`, { cache: "no-store" });
           if (pollingVersionRef.current !== pollingVersion) return;
-          payload = (await response.json()) as { story?: ServerStory; error?: string };
-          if (!response.ok || !payload.story) throw new Error(payload.error ?? "Story status is unavailable.");
+          payload = (await response.json()) as { story?: ServerStory; error?: string; code?: string };
+          if (!response.ok || !payload.story) {
+            throw new StudioApiError(
+              payload.error ?? "Story status is unavailable.",
+              response.status,
+              payload.code,
+            );
+          }
           consecutiveRefreshErrors = 0;
           setError("");
         } catch (refreshError) {
+          if (isStoryRecompileError(refreshError)) {
+            transitionToRecompileRequired(
+              storyId,
+              planValue,
+              briefValue,
+              startedAt,
+              refreshError.message,
+            );
+            return;
+          }
           consecutiveRefreshErrors += 1;
           if (consecutiveRefreshErrors >= 5) throw refreshError;
           setError("The status connection paused briefly. Retrying automatically…");
@@ -714,18 +865,39 @@ export function StoryStudio() {
         }
 
         applyServerStory(payload.story);
+        setPlan(payload.story.plan);
+        setBrief(payload.story.brief);
+        persistGeneration(
+          storyId,
+          payload.story.plan,
+          payload.story.brief,
+          startedAt,
+          payload.story.status,
+          payload.story.compatibility,
+        );
         const ready = payload.story.clips.filter((clip) => clip.status === "ready").length;
+        const playableSlots = new Set(
+          payload.story.clips
+            .filter((clip) => clip.status === "ready" && typeof clip.mediaUrl === "string" && clip.mediaUrl.length > 0)
+            .map((clip) => clip.slot),
+        );
+        const allPlaybackMediaReady = CLIP_IDS.every((clipId) => playableSlots.has(clipId));
         const active = payload.story.clips.filter((clip) =>
           clip.status === "starting" || clip.status === "rendering" || clip.status === "extension_retry" || clip.status === "extending" || clip.status === "ingesting"
         ).length;
         const failed = payload.story.clips.filter((clip) => clip.status === "failed").length;
 
-        if (ready === 4) {
+        if (ready === 4 && allPlaybackMediaReady) {
           localStorage.removeItem(GENERATION_STORAGE_KEY);
           setSavedGeneration(null);
           resetPlaybackState();
           setStage("player");
           return;
+        }
+        if (ready === 4) {
+          setError("All four clips finished, but one or more media files are not available for playback yet.");
+          await wait(3_000);
+          continue;
         }
         if (active === 0 && failed > 0) {
           setError(`${failed} clip${failed === 1 ? "" : "s"} need another try. Finished clips are safely stored.`);
@@ -748,6 +920,7 @@ export function StoryStudio() {
   }
 
   async function startGeneration(planValue: StoryPlan, briefValue: StoryBrief, approvedBlueprintId: string) {
+    invalidateInitialRecovery();
     const requestedAt = currentTimestamp();
     setError("");
     setStage("generating");
@@ -775,6 +948,19 @@ export function StoryStudio() {
       const startedAt = result.story.createdAt ?? requestedAt;
       await pollStory(result.story.id, result.story.plan, briefValue, startedAt);
     } catch (startError) {
+      if (isBlueprintRecompileError(startError)) {
+        setBrief(briefValue);
+        setPlan(null);
+        setBlueprintId(null);
+        setVideoUrls({});
+        setJobs(emptyJobs());
+        setError("");
+        setIsGenerating(false);
+        setRecoveryAnnouncement(`${startError.message} The story brief is preserved so you can compile it again.`);
+        setStage("brief");
+        window.requestAnimationFrame(() => lessonInputRef.current?.focus());
+        return;
+      }
       setError(startError instanceof Error ? startError.message : "The video jobs could not be started.");
       setIsGenerating(false);
       setStage("blueprint");
@@ -783,11 +969,31 @@ export function StoryStudio() {
 
   function resumePreviousGeneration() {
     if (!savedGeneration) return;
+    invalidateInitialRecovery();
     setBrief(savedGeneration.brief);
     setPlan(savedGeneration.plan);
     setJobs(emptyJobs());
     setError("");
     void pollStory(savedGeneration.storyId, savedGeneration.plan, savedGeneration.brief, savedGeneration.startedAt);
+  }
+
+  function prepareLegacyRecompile() {
+    if (!savedGeneration) return;
+    invalidateInitialRecovery();
+    pollingVersionRef.current += 1;
+    pollingRef.current = false;
+    setBrief(savedGeneration.brief);
+    localStorage.removeItem(GENERATION_STORAGE_KEY);
+    setSavedGeneration(null);
+    setPlan(null);
+    setBlueprintId(null);
+    setError("");
+    setVideoUrls({});
+    setJobs(emptyJobs());
+    setIsGenerating(false);
+    setRecoveryAnnouncement("The older story brief is restored and ready to edit before you create a new blueprint.");
+    setStage("brief");
+    window.requestAnimationFrame(() => lessonInputRef.current?.focus());
   }
 
   async function retryGeneration() {
@@ -799,6 +1005,16 @@ export function StoryStudio() {
       setIsGenerating(false);
       await pollStory(savedGeneration.storyId, plan, brief, savedGeneration.startedAt);
     } catch (retryError) {
+      if (isStoryRecompileError(retryError)) {
+        transitionToRecompileRequired(
+          savedGeneration.storyId,
+          savedGeneration.plan,
+          savedGeneration.brief,
+          savedGeneration.startedAt,
+          retryError.message,
+        );
+        return;
+      }
       setError(retryError instanceof Error ? retryError.message : "The unfinished clips could not be restarted.");
       setIsGenerating(false);
     }
@@ -810,6 +1026,7 @@ export function StoryStudio() {
   }
 
   function resetStudio() {
+    invalidateInitialRecovery();
     pollingVersionRef.current += 1;
     pollingRef.current = false;
     resetPlaybackState();
@@ -825,6 +1042,7 @@ export function StoryStudio() {
     setGenerationStartedAt(null);
     setElapsedSeconds(0);
     setSensitiveTopicAcknowledged(false);
+    setRecoveryAnnouncement("");
     setStage("brief");
   }
 
@@ -860,9 +1078,34 @@ export function StoryStudio() {
         </nav>
 
         {savedGeneration && stage === "brief" && (
-          <aside className="resume-banner">
-            <div><span aria-hidden="true">↻</span><p><strong>A story is waiting for you</strong><small>{savedGeneration.plan.title}</small></p></div>
-            <button type="button" onClick={resumePreviousGeneration}>Resume generation</button>
+          <aside
+            className="resume-banner"
+            role="status"
+            aria-live="polite"
+            aria-labelledby="saved-story-status-title"
+          >
+            <div>
+              <span aria-hidden="true">↻</span>
+              <p>
+                <strong id="saved-story-status-title">
+                  {savedGeneration.compatibility?.mode === "playback_only"
+                    ? "A completed story is ready"
+                    : savedGeneration.compatibility?.mode === "recompile_required"
+                      ? "An older story needs rebuilding"
+                      : "A story is waiting for you"}
+                </strong>
+                <small lang={savedGeneration.brief.language === "Armenian" ? "hy" : "en"}>{savedGeneration.plan.title}</small>
+              </p>
+            </div>
+            {savedGeneration.compatibility?.mode === "recompile_required" ? (
+              <button ref={recompileActionRef} type="button" onClick={prepareLegacyRecompile}>Use this brief again</button>
+            ) : (
+              <button type="button" onClick={resumePreviousGeneration}>
+                {savedGeneration.compatibility?.mode === "playback_only" || savedGeneration.status === "ready"
+                  ? "Play story"
+                  : "Resume generation"}
+              </button>
+            )}
           </aside>
         )}
 
@@ -914,6 +1157,7 @@ export function StoryStudio() {
 
               <label className="field-label" htmlFor="lesson">What should your child learn?</label>
               <textarea
+                ref={lessonInputRef}
                 id="lesson"
                 value={brief.lesson}
                 minLength={8}
@@ -940,6 +1184,9 @@ export function StoryStudio() {
               </select>
 
               {error && <p className="form-error" role="alert">{error}</p>}
+              {recoveryAnnouncement && (
+                <p className="action-note" role="status" aria-live="polite">{recoveryAnnouncement}</p>
+              )}
               <button className="main-action" disabled={isPlanning} type="submit">
                 {isPlanning ? <><span className="spinner" /> Compiling the story…</> : <>Create story blueprint <span>→</span></>}
               </button>
@@ -976,7 +1223,7 @@ export function StoryStudio() {
         {stage === "blueprint" && plan && (
           <section className="blueprint-view">
             <div className="view-heading">
-              <div><span className="section-kicker">Continuity-locked blueprint</span><h1>{plan.title}</h1><p>{plan.parentSummary}</p></div>
+              <div><span className="section-kicker">Continuity-locked blueprint</span><h1 lang={storyLanguage}>{plan.title}</h1><p lang={storyLanguage}>{plan.parentSummary}</p></div>
               <button className="quiet-button" type="button" onClick={() => setStage("brief")}>← Edit brief</button>
             </div>
 
@@ -989,12 +1236,12 @@ export function StoryStudio() {
                       <span>Compiler v{compiledPackage.compiler.schemaVersion} · {compiledPackage.compiler.model}</span>
                     </div>
                     <span className="card-label">Selected adventure premise</span>
-                    <h2>{selectedPremise.title}</h2>
-                    <p>{selectedPremise.logline}</p>
+                    <h2 lang={storyLanguage}>{selectedPremise.title}</h2>
+                    <p lang={storyLanguage}>{selectedPremise.logline}</p>
                     <dl>
-                      <div><dt>External goal</dt><dd>{selectedPremise.externalGoal}</dd></div>
-                      <div><dt>Why this framing</dt><dd>{compiledPackage.moralSpec.policyReason}</dd></div>
-                      {compiledPackage.moralSpec.policyDecision === "TRANSFORM" && <div><dt>Compiled lesson</dt><dd>{compiledPackage.moralSpec.compiledLesson}</dd></div>}
+                      <div><dt>External goal</dt><dd lang={storyLanguage}>{selectedPremise.externalGoal}</dd></div>
+                      <div><dt>Why this framing</dt><dd lang={storyLanguage}>{compiledPackage.moralSpec.policyReason}</dd></div>
+                      {compiledPackage.moralSpec.policyDecision === "TRANSFORM" && <div><dt>Compiled lesson</dt><dd lang={storyLanguage}>{compiledPackage.moralSpec.compiledLesson}</dd></div>}
                     </dl>
                     <div className="compiler-metrics">
                       <span><strong>{selectedPremise.storynessScore}</strong> storyness</span>
@@ -1008,14 +1255,14 @@ export function StoryStudio() {
                           const evaluation = compiledPackage.premiseSelection.evaluations.find((entry) => entry.premiseId === premise.id);
                           return (
                             <article className="premise-review-card" key={premise.id}>
-                              <div><strong>{premise.title}</strong><span>{premise.storynessScore}/100 · {evaluation?.passed ? "Passed" : "Needs revision"}</span></div>
-                              <p>{premise.logline}</p>
+                              <div><strong lang={storyLanguage}>{premise.title}</strong><span>{premise.storynessScore}/100 · {evaluation?.passed ? "Passed" : "Needs revision"}</span></div>
+                              <p lang={storyLanguage}>{premise.logline}</p>
                               <dl>
                                 {PREMISE_FIELDS.map((field) => (
-                                  <div key={field.key}><dt>{field.label}</dt><dd>{premise[field.key]}</dd></div>
+                                  <div key={field.key}><dt>{field.label}</dt><dd lang={storyLanguage}>{premise[field.key]}</dd></div>
                                 ))}
                               </dl>
-                              <small>{evaluation?.reason}</small>
+                              <small lang={storyLanguage}>{evaluation?.reason}</small>
                             </article>
                           );
                         })}
@@ -1036,18 +1283,18 @@ export function StoryStudio() {
                 )}
                 <article className="choice-preview">
                   <span className="card-label">The child will decide</span>
-                  <p className="child-intro">{plan.childIntro}</p>
-                  <h2>{plan.choiceQuestion}</h2>
+                  <p className="child-intro" lang={storyLanguage}>{plan.childIntro}</p>
+                  <h2 lang={storyLanguage}>{plan.choiceQuestion}</h2>
                   <div className="preview-choices">
-                    <div className="good"><span>♥</span><p><strong>{plan.positiveChoice.label}</strong><small>{plan.positiveChoice.explanation}</small></p></div>
-                    <div className="other"><span>?</span><p><strong>{plan.negativeChoice.label}</strong><small>{plan.negativeChoice.explanation}</small></p></div>
+                    <div className="good"><span>♥</span><p lang={storyLanguage}><strong>{plan.positiveChoice.label}</strong><small>{plan.positiveChoice.explanation}</small></p></div>
+                    <div className="other"><span>?</span><p lang={storyLanguage}><strong>{plan.negativeChoice.label}</strong><small>{plan.negativeChoice.explanation}</small></p></div>
                   </div>
                 </article>
 
                 <div className="clip-blueprints">
                   {plan.clips.map((clip) => {
                     const meta = CLIP_META[clip.id];
-                    return <article key={clip.id}><span className={`clip-icon ${clip.id}`}>{meta.icon}</span><div><small>CLIP {meta.number}</small><h3>{clip.title}</h3><p>{clip.summary}</p></div><b>{clipDurationLabel(plan, clip.id)}</b></article>;
+                    return <article key={clip.id}><span className={`clip-icon ${clip.id}`}>{meta.icon}</span><div><small>CLIP {meta.number}</small><h3 lang={storyLanguage}>{clip.title}</h3><p lang={storyLanguage}>{clip.summary}</p></div><b>{clipDurationLabel(plan, clip.id)}</b></article>;
                   })}
                 </div>
                 {compiledPackage && (
@@ -1060,8 +1307,8 @@ export function StoryStudio() {
                           <span>{String(index + 1).padStart(2, "0")}</span>
                           <div>
                             <small>{CLIP_META[shot.clipId].label} · segment {shot.segmentIndex + 1} · {shot.durationSeconds}s</small>
-                            <strong>{shot.spokenText}</strong>
-                            <p>{shot.timedBeats.join(" ")}</p>
+                            <strong lang={storyLanguage}>{shot.spokenText}</strong>
+                            <p lang={storyLanguage}>{shot.timedBeats.join(" ")}</p>
                             <dl>
                               <div><dt>Emotion</dt><dd>{shot.emotion}</dd></div>
                               <div><dt>Camera</dt><dd>{shot.camera}</dd></div>
@@ -1077,10 +1324,10 @@ export function StoryStudio() {
                   <article className="branch-graph-preview">
                     <div><span className="card-label">Validated branch graph</span><strong>Both paths rejoin safely</strong></div>
                     <div className="branch-graph-columns">
-                      <section><small>CARING PATH</small>{compiledPackage.graph.branches.constructive.beats.map((beat) => <p key={beat.id}>{beat.summary}</p>)}</section>
-                      <section><small>LEARNING + REPAIR PATH</small>{compiledPackage.graph.branches.harmful.beats.map((beat) => <p key={beat.id}>{beat.summary}</p>)}</section>
+                      <section><small>CARING PATH</small>{compiledPackage.graph.branches.constructive.beats.map((beat) => <p lang={storyLanguage} key={beat.id}>{beat.summary}</p>)}</section>
+                      <section><small>LEARNING + REPAIR PATH</small>{compiledPackage.graph.branches.harmful.beats.map((beat) => <p lang={storyLanguage} key={beat.id}>{beat.summary}</p>)}</section>
                     </div>
-                    <p className="convergence-note">✓ Shared finale preconditions validated · {compiledPackage.graph.reflectionPrompt}</p>
+                    <p className="convergence-note">✓ Shared finale preconditions validated · <span lang={storyLanguage}>{compiledPackage.graph.reflectionPrompt}</span></p>
                   </article>
                 )}
               </div>
@@ -1125,7 +1372,7 @@ export function StoryStudio() {
           <section className="generation-view">
             <div className="generation-heading">
               <span className="section-kicker">Four-clip render</span>
-              <h1>Building “{plan.title}”</h1>
+              <h1>Building “<span lang={storyLanguage}>{plan.title}</span>”</h1>
               <p>You can leave this page and resume later. Each finished clip is kept while the others continue.</p>
             </div>
             <div className="progress-panel">
@@ -1169,8 +1416,8 @@ export function StoryStudio() {
                   <article className={`render-card ${job.status}`} key={id}>
                     <div className="render-top"><span className={`clip-icon ${id}`}>{meta.icon}</span><span className="status-dot" /></div>
                     <small>CLIP {meta.number}</small>
-                    <h2>{clip?.title ?? meta.label}</h2>
-                    <p>{clip?.summary ?? meta.detail}</p>
+                    <h2 lang={clip ? storyLanguage : "en"}>{clip?.title ?? meta.label}</h2>
+                    <p lang={clip ? storyLanguage : "en"}>{clip?.summary ?? meta.detail}</p>
                     <div
                       className="clip-progress"
                       role="progressbar"
@@ -1191,8 +1438,8 @@ export function StoryStudio() {
             {!isGenerating && failedCount > 0 && (
               <button className="main-action centered" type="button" onClick={() => void retryGeneration()}>Retry unfinished clips <span>↻</span></button>
             )}
-            {!isGenerating && failedCount === 0 && readyCount < 4 && (
-              <button className="main-action centered" type="button" onClick={refreshGenerationStatus}>Check status again <span>↻</span></button>
+            {!isGenerating && failedCount === 0 && (readyCount < 4 || generationPlaybackMediaIncomplete) && (
+              <button className="main-action centered" type="button" onClick={refreshGenerationStatus}>{generationPlaybackMediaIncomplete ? "Recheck missing media" : "Check status again"} <span>↻</span></button>
             )}
           </section>
         )}
@@ -1200,14 +1447,14 @@ export function StoryStudio() {
         {stage === "player" && plan && (
           <section className="player-view">
             <div className="player-heading">
-              <div><span className="section-kicker">Interactive preview</span><h1>{plan.title}</h1></div>
+              <div><span className="section-kicker">Interactive preview</span><h1 lang={storyLanguage}>{plan.title}</h1></div>
               <div className="playback-route"><span className={playback === "intro" ? "active" : "done"}>00</span><i /><span className={playback === "opening" || playback === "choice" ? "active" : playback === "intro" ? "" : "done"}>01</span><i /><span className={playback === "positive" || playback === "negative" ? "active" : chosenPath ? "done" : ""}>{chosenPath === "negative" ? "03" : "02"}</span><i /><span className={playback === "ending" ? "active" : playback === "complete" ? "done" : ""}>04</span></div>
             </div>
 
             <div className="player-layout">
               <div className="video-player-shell">
                 {playbackStarted && pendingClipId === null && playback !== "choice" && playback !== "complete" && (
-                  <div className="now-playing"><span>Now playing</span><strong>{CLIP_META[visibleClipId].number} · {clipById.get(visibleClipId)?.title}</strong></div>
+                  <div className="now-playing"><span>Now playing</span><strong>{CLIP_META[visibleClipId].number} · <span lang={storyLanguage}>{clipById.get(visibleClipId)?.title}</span></strong></div>
                 )}
                 {CLIP_IDS.map((clipId) => {
                   const controlsActive =
@@ -1251,7 +1498,7 @@ export function StoryStudio() {
                 {!playbackStarted && (
                   <div className="playback-preparing" aria-live="polite">
                     <span>{preStartTransitionPaused ? "OPENING PAUSED WHILE PREPARING" : failedMediaClip ? "ONE SCENE NEEDS TO RECONNECT" : "NARRATOR SETUP · ՊԱՏՄՈՂԻ ՆԵՐԱԾՈՒԹՅՈՒՆ"}</span>
-                    <h2 className={!preStartTransitionPaused && !failedMediaClip ? "narrator-intro" : undefined}>{preStartTransitionPaused ? "Tap to reconnect and begin the story." : failedMediaClip ? "Let’s reconnect the missing scene." : plan.childIntro}</h2>
+                    <h2 lang={!preStartTransitionPaused && !failedMediaClip ? storyLanguage : "en"} className={!preStartTransitionPaused && !failedMediaClip ? "narrator-intro" : undefined}>{preStartTransitionPaused ? "Tap to reconnect and begin the story." : failedMediaClip ? "Let’s reconnect the missing scene." : plan.childIntro}</h2>
                     <div
                       className="prebuffer-progress"
                       role="progressbar"
@@ -1262,7 +1509,7 @@ export function StoryStudio() {
                     >
                       <i style={{ width: `${(bufferedClips.length / CLIP_IDS.length) * 100}%` }} />
                     </div>
-                    <p>{!preStartTransitionPaused && !failedMediaClip ? playbackBufferReady ? "All four paths are ready. Begin when your child understands the setup." : `The opening is ready while paths ${bufferedClips.length} of ${CLIP_IDS.length} prepare in the background.` : "We’re preparing every path now so your child’s choice can continue smoothly."}</p>
+                    <p>{!preStartTransitionPaused && !failedMediaClip ? playbackBufferReady ? "All four scenes can start. Begin when your child understands the setup." : `The opening can start while scenes ${bufferedClips.length} of ${CLIP_IDS.length} prepare in the background.` : "We’re preparing every path now so your child’s choice can continue smoothly."}</p>
                     {!preStartTransitionPaused && !failedMediaClip && <small>This AI-generated story was reviewed and started by your parent.</small>}
                     {preStartTransitionPaused && <button ref={recoveryActionRef} type="button" onClick={continuePlayback}>Reconnect and start ↻</button>}
                     {!preStartTransitionPaused && failedMediaClip && <button type="button" onClick={() => retryFailedMedia(failedMediaClip)}>Retry scene ↻</button>}
@@ -1281,7 +1528,7 @@ export function StoryStudio() {
                   <div className="scene-transition-status" role="status">Joining the next scene…</div>
                 )}
                 {playback === "ending" && chosenPath && compiledPackage?.graph.convergence.narrationByBranch && (
-                  <div className="finale-narration" aria-live="polite">
+                  <div className="finale-narration" lang={storyLanguage} aria-live="polite">
                     {chosenPath === "positive"
                       ? compiledPackage.graph.convergence.narrationByBranch.constructive
                       : compiledPackage.graph.convergence.narrationByBranch.harmful}
@@ -1290,15 +1537,15 @@ export function StoryStudio() {
                 {playback === "choice" && (
                   <div className="decision-overlay" role="dialog" aria-labelledby="story-choice-title">
                     <span>YOUR CHOICE</span>
-                    <h2 id="story-choice-title">{plan.choiceQuestion}</h2>
+                    <h2 id="story-choice-title" lang={storyLanguage}>{plan.choiceQuestion}</h2>
                     <div>
-                      <button ref={firstChoiceRef} type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("positive")}><i>♥</i><strong>{plan.positiveChoice.label}</strong></button>
-                      <button type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("negative")}><i>?</i><strong>{plan.negativeChoice.label}</strong></button>
+                      <button ref={firstChoiceRef} type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("positive")}><i>♥</i><strong lang={storyLanguage}>{plan.positiveChoice.label}</strong></button>
+                      <button type="button" disabled={pendingClipId !== null} onClick={() => chooseBranch("negative")}><i>?</i><strong lang={storyLanguage}>{plan.negativeChoice.label}</strong></button>
                     </div>
                   </div>
                 )}
                 {playback === "complete" && (
-                  <div className="completion-overlay" role="dialog" aria-labelledby="story-complete-title" aria-describedby="story-reflection-prompt"><span>✓</span><h2 id="story-complete-title">Story complete</h2><p id="story-reflection-prompt">{compiledPackage?.graph.reflectionPrompt ?? "The choice changed the middle. What did the characters feel, and why?"}</p><button ref={completionActionRef} type="button" onClick={restartPlayback}>Try the other path ↻</button></div>
+                  <div className="completion-overlay" role="dialog" aria-labelledby="story-complete-title" aria-describedby="story-reflection-prompt"><span>✓</span><h2 id="story-complete-title">Story complete</h2><p id="story-reflection-prompt" lang={compiledPackage?.graph.reflectionPrompt ? storyLanguage : "en"}>{compiledPackage?.graph.reflectionPrompt ?? "The choice changed the middle. What did the characters feel, and why?"}</p><button ref={completionActionRef} type="button" onClick={restartPlayback}>Try the other path ↻</button></div>
                 )}
               </div>
 
@@ -1309,8 +1556,8 @@ export function StoryStudio() {
                   <div className="route-lead" />
                   <div className={`route-node opening ${playback === "opening" || playback === "choice" ? "active" : playback === "intro" ? "" : "done"}`}><span>01</span><p><strong>Beginning</strong><small>Ends at the choice</small></p></div>
                   <div className="route-split" />
-                  <div className={`route-node positive ${chosenPath === "positive" ? playback === "ending" || playback === "complete" ? "done" : playback === "positive" || pendingClipId === "positive" ? "active" : "" : ""}`}><span>02</span><p><strong>Caring path · {clipDurationLabel(plan, "positive")}</strong><small>{plan.positiveChoice.label}</small></p></div>
-                  <div className={`route-node negative ${chosenPath === "negative" ? playback === "ending" || playback === "complete" ? "done" : playback === "negative" || pendingClipId === "negative" ? "active" : "" : ""}`}><span>03</span><p><strong>Learning path · {clipDurationLabel(plan, "negative")}</strong><small>{plan.negativeChoice.label}</small></p></div>
+                  <div className={`route-node positive ${chosenPath === "positive" ? playback === "ending" || playback === "complete" ? "done" : playback === "positive" || pendingClipId === "positive" ? "active" : "" : ""}`}><span>02</span><p><strong>Caring path · {clipDurationLabel(plan, "positive")}</strong><small lang={storyLanguage}>{plan.positiveChoice.label}</small></p></div>
+                  <div className={`route-node negative ${chosenPath === "negative" ? playback === "ending" || playback === "complete" ? "done" : playback === "negative" || pendingClipId === "negative" ? "active" : "" : ""}`}><span>03</span><p><strong>Learning path · {clipDurationLabel(plan, "negative")}</strong><small lang={storyLanguage}>{plan.negativeChoice.label}</small></p></div>
                   <div className="route-join" />
                   <div className={`route-node ending ${playback === "ending" ? "active" : playback === "complete" ? "done" : ""}`}><span>04</span><p><strong>Shared ending</strong><small>Always plays last</small></p></div>
                 </div>
