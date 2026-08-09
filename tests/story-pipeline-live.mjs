@@ -35,6 +35,8 @@ if (storyId) {
 const observedExtensions = { positive: new Set(), negative: new Set() };
 let lastState = "";
 let finalStory;
+let observedReadyReferences = false;
+let observedInFlightVideo = false;
 const deadline = Date.now() + 20 * 60_000;
 
 while (Date.now() < deadline) {
@@ -44,7 +46,15 @@ while (Date.now() < deadline) {
   const payload = await response.json();
   assert.equal(response.status, 200, `Story poll failed: ${payload?.error ?? "unknown error"}`);
   const story = payload.story;
+  if (story.plan?.compiler?.promptVersion === "branching-compiler-v3") {
+    assert.equal(story.references?.length, 2, "reference-guided stories require exactly two character assets");
+    observedReadyReferences ||= story.references.every((reference) => reference.status === "ready");
+    for (const reference of story.references) {
+      assert.notEqual(reference.status, "failed", `${reference.characterId} reference failed: ${reference.error ?? "unknown error"}`);
+    }
+  }
   for (const clip of story.clips) {
+    if (clip.status !== "ready") observedInFlightVideo = true;
     if (clip.slot === "positive" || clip.slot === "negative") {
       observedExtensions[clip.slot].add(clip.extensionCount);
     }
@@ -65,9 +75,25 @@ while (Date.now() < deadline) {
 }
 
 assert.ok(finalStory, "The four-clip story did not become ready within 20 minutes");
+if (finalStory.plan?.compiler?.promptVersion === "branching-compiler-v3") {
+  assert.equal(observedReadyReferences, true, "both character references must become ready before completion");
+  for (const reference of finalStory.references) {
+    const head = await fetch(`${baseUrl}${reference.mediaUrl}`, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(10_000),
+    });
+    assert.equal(head.status, 200, `${reference.characterId} reference HEAD failed`);
+    assert.equal(head.headers.get("content-type"), "image/png");
+    assert.ok(Number(head.headers.get("content-length")) > 10_000, `${reference.characterId} reference is unexpectedly small`);
+  }
+}
 for (const slot of ["positive", "negative"]) {
-  assert.ok(observedExtensions[slot].has(1), `${slot} never exposed extension step 1`);
-  assert.ok(observedExtensions[slot].has(2), `${slot} never exposed extension step 2`);
+  if (observedInFlightVideo) {
+    assert.ok(observedExtensions[slot].has(1), `${slot} never exposed extension step 1`);
+    assert.ok(observedExtensions[slot].has(2), `${slot} never exposed extension step 2`);
+  } else {
+    assert.equal(finalStory.clips.find((clip) => clip.slot === slot)?.extensionCount, 2);
+  }
 }
 
 for (const slot of ["opening", "positive", "negative", "ending"]) {

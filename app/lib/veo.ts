@@ -3,10 +3,12 @@ import {
   encodeVideoBase64,
   MAX_VIDEO_BYTES,
   isVertexVeoOperation,
+  veoReferenceImages,
   vertexVeoEndpoint,
   veoGenerationEndpoint,
   veoOperationEndpoint,
 } from "./veo-contract";
+import type { VideoReferenceImage } from "./character-references";
 
 type StartResponse = { name?: string };
 export type VeoVideo = { base64: string; mimeType: string };
@@ -73,7 +75,12 @@ async function downloadGeneratedVideo(uri: string, declaredMimeType?: string): P
   return { base64: encodeVideoBase64(new Uint8Array(buffer)), mimeType };
 }
 
-export async function startVeoClip(prompt: string, seed: number, durationSeconds: 6 | 8 = 8) {
+export async function startVeoClip(
+  prompt: string,
+  seed: number,
+  durationSeconds: 6 | 8 = 8,
+  references: ReadonlyArray<VideoReferenceImage> = [],
+) {
   const projectNumber = getGoogleProjectNumber();
   const vertexEndpoint = projectNumber
     ? vertexVeoEndpoint(projectNumber, "predictLongRunning")
@@ -81,7 +88,14 @@ export async function startVeoClip(prompt: string, seed: number, durationSeconds
   const result = await googleJson<StartResponse>(vertexEndpoint ?? veoGenerationEndpoint(), {
     method: "POST",
     body: JSON.stringify({
-      instances: [{ prompt }],
+      instances: [
+        {
+          prompt,
+          ...(references.length > 0
+            ? { referenceImages: veoReferenceImages(references, Boolean(vertexEndpoint)) }
+            : {}),
+        },
+      ],
       parameters: {
         ...(vertexEndpoint ? { sampleCount: 1 } : { numberOfVideos: 1 }),
         durationSeconds,

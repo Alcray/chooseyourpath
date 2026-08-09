@@ -52,3 +52,30 @@ export const clips = sqliteTable(
     index("idx_clips_story_status_updated").on(table.storyId, table.status, table.updatedAt),
   ],
 );
+
+export const characterReferences = sqliteTable(
+  "character_references",
+  {
+    id: text("id").primaryKey(),
+    storyId: text("story_id")
+      .notNull()
+      .references(() => stories.id, { onDelete: "cascade" }),
+    characterId: text("character_id").notNull(),
+    status: text("status").notNull(),
+    providerModel: text("provider_model").notNull(),
+    prompt: text("prompt").notNull(),
+    r2Key: text("r2_key"),
+    mimeType: text("mime_type"),
+    errorMessage: text("error_message"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_character_references_story_character").on(table.storyId, table.characterId),
+    index("idx_character_references_story_status_updated").on(
+      table.storyId,
+      table.status,
+      table.updatedAt,
+    ),
+  ],
+);

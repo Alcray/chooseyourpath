@@ -4,7 +4,6 @@ import { blueprints, stories } from "../../../db/schema";
 import { apiErrorResponse, GoogleApiError } from "../../lib/google";
 import {
   CLIP_IDS,
-  baseClipDuration,
   type StoryBrief,
 } from "../../lib/story";
 import { approveStoryPackageForRender, validateStoryPackage } from "../../lib/story-compiler";
@@ -14,6 +13,7 @@ import {
 } from "../../lib/story-migrations";
 import { inspectStoredPlaybackMedia, summarizeCanonicalClipWorkflow } from "../../lib/story-media";
 import {
+  getStoryCharacterReferences,
   getStoryClips,
   parseStoredStoryBrief,
   requestOwnerId,
@@ -22,7 +22,8 @@ import {
   validateStoryPackageMatchesBrief,
   validateStoredStoryBrief,
 } from "../../lib/story-store";
-import { getVideoProvider } from "../../lib/video-provider";
+import { buildCharacterReferencePrompt } from "../../lib/character-references";
+import { CHARACTER_IMAGE_MODEL } from "../../lib/image-provider";
 
 const BLUEPRINT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -74,6 +75,7 @@ async function existingStory(ownerUserId: string, idempotencyKey: string) {
 
 async function compatibleStoryPayload(story: StoredStory) {
   const storedClips = await getStoryClips(story.id);
+  const references = await getStoryCharacterReferences(story.id);
   const brief = parseStoredStoryBrief(story.briefJson);
   let storedPlan: unknown;
   try {
@@ -103,12 +105,12 @@ async function compatibleStoryPayload(story: StoredStory) {
             : {}),
         }));
         const unavailableStatus = workflow.status === "ready" ? "partial" : workflow.status;
-        return storyPayload({ ...story, status: unavailableStatus }, unavailableClips, { plan, brief });
+        return storyPayload({ ...story, status: unavailableStatus }, unavailableClips, { plan, brief, references });
       }
       return storyPayload(
         { ...story, status: mediaInspection.complete ? "ready" : workflow.status },
         storedClips,
-        { plan, brief },
+        { plan, brief, references },
       );
     }
     if (
@@ -127,6 +129,7 @@ async function compatibleStoryPayload(story: StoredStory) {
         {
           plan: compatibility.playablePlan,
           brief,
+          references,
           compatibility: playbackReady
             ? {
                 mode: "playback_only",
@@ -250,6 +253,14 @@ export async function POST(request: Request) {
       reviewedAt: now,
     });
     validateStoryPackageMatchesBrief(plan, brief);
+    if (plan.compiler.promptVersion !== "branching-compiler-v3") {
+      throw new GoogleApiError(
+        "This blueprint predates locked character references. Recompile it before rendering.",
+        409,
+        false,
+        "BLUEPRINT_RECOMPILE_REQUIRED",
+      );
+    }
     const duplicate = await existingStory(ownerUserId, body.idempotencyKey);
     if (duplicate) {
       const duplicatePayload = await compatibleStoryPayload(duplicate);
@@ -264,8 +275,6 @@ export async function POST(request: Request) {
       assertIdempotentRequestMatches(duplicatePayload, brief, plan);
       return Response.json({ story: duplicatePayload });
     }
-    const videoProvider = getVideoProvider();
-
     const storyId = crypto.randomUUID();
     const d1 = getRawDb();
     const inserts = [
@@ -279,7 +288,7 @@ export async function POST(request: Request) {
           storyId,
           ownerUserId,
           body.idempotencyKey,
-          "starting",
+          "references",
           JSON.stringify(brief),
           JSON.stringify(plan),
           now,
@@ -298,10 +307,34 @@ export async function POST(request: Request) {
             crypto.randomUUID(),
             storyId,
             slot,
-            "starting",
+            "waiting",
             0,
             now + index,
             now + index,
+            storyId,
+            ownerUserId,
+            body.idempotencyKey,
+          ),
+      ),
+      ...plan.canon.characterIds.map((characterId, index) =>
+        d1
+          .prepare(
+            `INSERT OR IGNORE INTO character_references
+              (id, story_id, character_id, status, provider_model, prompt, created_at, updated_at)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM stories WHERE id = ? AND owner_user_id = ? AND idempotency_key = ?
+             )`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            storyId,
+            characterId,
+            "waiting",
+            CHARACTER_IMAGE_MODEL,
+            buildCharacterReferencePrompt(plan, brief, characterId),
+            now + CLIP_IDS.length + index,
+            now + CLIP_IDS.length + index,
             storyId,
             ownerUserId,
             body.idempotencyKey,
@@ -333,42 +366,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const starts = await Promise.allSettled(
-      plan.clips.map(async (clip) => ({
-        slot: clip.id,
-        operationName: await videoProvider.start(clip.prompt, plan.continuitySeed, baseClipDuration(clip.id)),
-      })),
-    );
-
-    const updates = starts.map((result, index) => {
-      const slot = plan.clips[index].id;
-      const expectedUpdatedAt = now + index;
-      if (result.status === "fulfilled") {
-        return d1
-          .prepare(
-            "UPDATE clips SET status = ?, provider_job_id = ?, error_message = NULL, updated_at = ? WHERE story_id = ? AND slot = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
-          )
-          .bind("rendering", result.value.operationName, Date.now(), storyId, slot, "starting", expectedUpdatedAt);
-      }
-      const message = result.reason instanceof Error ? result.reason.message : "Video generation could not start.";
-      return d1
-        .prepare(
-          "UPDATE clips SET status = ?, error_message = ?, updated_at = ? WHERE story_id = ? AND slot = ? AND status = ? AND updated_at = ? AND provider_job_id IS NULL",
-        )
-        .bind("failed", message.slice(0, 500), Date.now(), storyId, slot, "starting", expectedUpdatedAt);
-    });
-    await d1.batch(updates);
-
     const storedClips = await getStoryClips(storyId);
+    const references = await getStoryCharacterReferences(storyId);
     const workflow = summarizeCanonicalClipWorkflow(storedClips, plan);
     if (!workflow) throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
-    const { status } = workflow;
-    await db
-      .update(stories)
-      .set({ status, updatedAt: Date.now() })
-      .where(eq(stories.id, storyId));
     const [story] = await db.select().from(stories).where(eq(stories.id, storyId)).limit(1);
-    return Response.json({ story: storyPayload(story, storedClips, { plan, brief }) }, { status: 202 });
+    return Response.json(
+      { story: storyPayload(story, storedClips, { plan, brief, references }) },
+      { status: 202 },
+    );
   } catch (error) {
     return apiErrorResponse(error);
   }

@@ -220,7 +220,7 @@ export type SemanticReview = {
 
 export type CompilerTrace = {
   schemaVersion: "1.1";
-  promptVersion: "branching-compiler-v2";
+  promptVersion: "branching-compiler-v2" | "branching-compiler-v3";
   model: string;
   compiledAt: number;
   stages: Array<{
@@ -289,6 +289,20 @@ export const CHARACTER_PAIRS = [
     emoji: "🦊 🐰",
     tagline: "Curious woodland friends",
     style: "Warm watercolor storybook animation",
+    characters: [
+      {
+        id: "pip_fox_v1",
+        name: "Pip",
+        description:
+          "a small orange fox with a cream muzzle, large kind brown eyes, a knitted forest-green scarf, and rounded child-friendly proportions",
+      },
+      {
+        id: "momo_rabbit_v1",
+        name: "Momo",
+        description:
+          "a small sky-blue rabbit with pink inner ears, round dark-blue eyes, a mustard-yellow vest, and rounded child-friendly proportions",
+      },
+    ],
     bible:
       "Pip is a small orange fox with a cream muzzle, large kind brown eyes, and a knitted forest-green scarf. Momo is a small sky-blue rabbit with pink inner ears, round dark-blue eyes, and a mustard-yellow vest. Pip is thoughtful and energetic; Momo is gentle and observant. Both have rounded child-friendly proportions.",
   },
@@ -299,6 +313,20 @@ export const CHARACTER_PAIRS = [
     emoji: "🐻 🐿️",
     tagline: "Cozy forest neighbors",
     style: "Soft handcrafted clay animation",
+    characters: [
+      {
+        id: "beni_bear_v1",
+        name: "Beni",
+        description:
+          "a small caramel-brown bear cub with a round muzzle, teal-blue overalls, a tiny cream neckerchief, and tactile child-friendly clay proportions",
+      },
+      {
+        id: "sisi_squirrel_v1",
+        name: "Sisi",
+        description:
+          "a russet squirrel with a large fluffy tail, bright hazel eyes, a plum-purple crossbody satchel, and tactile child-friendly clay proportions",
+      },
+    ],
     bible:
       "Beni is a small caramel-brown bear cub with a round muzzle, teal-blue overalls, and a tiny cream neckerchief. Sisi is a russet squirrel with a large fluffy tail, bright hazel eyes, and a plum-purple crossbody satchel. Beni is careful and sincere; Sisi is lively and encouraging. Both look like tactile handmade clay figures.",
   },
@@ -309,6 +337,20 @@ export const CHARACTER_PAIRS = [
     emoji: "🦦 🦆",
     tagline: "Playful riverside explorers",
     style: "Bright polished 3D family animation",
+    characters: [
+      {
+        id: "olli_otter_v1",
+        name: "Olli",
+        description:
+          "a small teal-brown otter with a pale belly, expressive green eyes, a burnt-orange beanie, clean rounded shapes, and soft natural textures",
+      },
+      {
+        id: "dori_duck_v1",
+        name: "Dori",
+        description:
+          "a sunny-yellow duckling with an orange bill, a mint-green backpack, wide dark eyes, clean rounded shapes, and soft natural textures",
+      },
+    ],
     bible:
       "Olli is a small teal-brown otter with a pale belly, expressive green eyes, and a burnt-orange beanie. Dori is a sunny-yellow duckling with an orange bill, a mint-green backpack, and wide dark eyes. Olli is inventive and bold; Dori is patient and warm. Both have clean rounded shapes and soft natural textures.",
   },
@@ -369,6 +411,6 @@ export function isExtendedClip(id: ClipId) {
   return id === "positive" || id === "negative";
 }
 
-export function baseClipDuration(id: ClipId): 6 | 8 {
-  return isExtendedClip(id) ? 6 : 8;
+export function baseClipDuration(id: ClipId, referenceGuided = false): 6 | 8 {
+  return isExtendedClip(id) && !referenceGuided ? 6 : 8;
 }

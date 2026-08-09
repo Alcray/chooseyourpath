@@ -812,18 +812,29 @@ export function validateSemanticReview(value: unknown): SemanticReview {
 
 const EXPECTED_SEGMENTS: Array<{ clipId: ClipId; segmentIndex: number; durationSeconds: 6 | 7 | 8 }> = [
   { clipId: "opening", segmentIndex: 0, durationSeconds: 8 },
-  { clipId: "positive", segmentIndex: 0, durationSeconds: 6 },
+  { clipId: "positive", segmentIndex: 0, durationSeconds: 8 },
   { clipId: "positive", segmentIndex: 1, durationSeconds: 7 },
   { clipId: "positive", segmentIndex: 2, durationSeconds: 7 },
-  { clipId: "negative", segmentIndex: 0, durationSeconds: 6 },
+  { clipId: "negative", segmentIndex: 0, durationSeconds: 8 },
   { clipId: "negative", segmentIndex: 1, durationSeconds: 7 },
   { clipId: "negative", segmentIndex: 2, durationSeconds: 7 },
   { clipId: "ending", segmentIndex: 0, durationSeconds: 8 },
 ];
 
-export function validateShotDraft(value: unknown, canon: StoryCanon): ShotManifestEntry[] {
+const LEGACY_EXPECTED_SEGMENTS = EXPECTED_SEGMENTS.map((segment) =>
+  (segment.clipId === "positive" || segment.clipId === "negative") && segment.segmentIndex === 0
+    ? { ...segment, durationSeconds: 6 as const }
+    : segment,
+);
+
+export function validateShotDraft(
+  value: unknown,
+  canon: StoryCanon,
+  layout: "reference_guided" | "legacy_text_only" = "reference_guided",
+): ShotManifestEntry[] {
   const draft = asObject(value, "shot manifest") as unknown as ShotDraft;
-  if (!Array.isArray(draft.segments) || draft.segments.length !== EXPECTED_SEGMENTS.length) {
+  const expectedSegments = layout === "legacy_text_only" ? LEGACY_EXPECTED_SEGMENTS : EXPECTED_SEGMENTS;
+  if (!Array.isArray(draft.segments) || draft.segments.length !== expectedSegments.length) {
     throw new GoogleApiError("The shot compiler must return exactly eight segments.", 502);
   }
   const canonicalCharacters = new Set(canon.characterIds);
@@ -831,7 +842,7 @@ export function validateShotDraft(value: unknown, canon: StoryCanon): ShotManife
   const ids = new Set<string>();
   const shots = draft.segments.map((shotValue, index) => {
     const shot = asObject(shotValue, `shot ${index + 1}`);
-    const expected = EXPECTED_SEGMENTS[index];
+    const expected = expectedSegments[index];
     const id = cleanText(shot.id, `shot ${index + 1} id`, 2, 80);
     if (ids.has(id)) throw new GoogleApiError("Shot IDs must be unique.", 502);
     ids.add(id);
@@ -949,7 +960,15 @@ function shotChecks(shots: ShotManifestEntry[], canon: StoryCanon) {
   const durations = Object.fromEntries(CLIP_IDS.map((clipId) => [clipId, shots.filter((shot) => shot.clipId === clipId).reduce((sum, shot) => sum + shot.durationSeconds, 0)]));
   return [
     check("shot_count", "Eight short segments are compiled", shots.length === 8, "The four playback clips are assembled from eight bounded generation segments."),
-    check("duration_budget", "Every clip matches its duration budget", durations.opening === 8 && durations.positive === 20 && durations.negative === 20 && durations.ending === 8, "Clip durations are 8s, 20s, 20s, and 8s."),
+    check(
+      "duration_budget",
+      "Every clip matches its duration budget",
+      durations.opening === 8 &&
+        (durations.positive === 20 || durations.positive === 22) &&
+        durations.negative === durations.positive &&
+        durations.ending === 8,
+      "Clip durations are 8s, matching 20s legacy or 22s reference-guided branches, and 8s.",
+    ),
     check("shot_canon", "Every shot uses locked visual canon", shots.every((shot) => shot.locationId === canon.locationId && shot.characterIds.every((id) => canon.characterIds.includes(id)) && shot.propIds.every((id) => canon.props.some((prop) => prop.id === id))), "No shot can introduce an unregistered character, prop, or location."),
     check("single_action", "Every segment has three timed motion beats", shots.every((shot) => shot.timedBeats.length === 3), "Each short render has bounded, inspectable motion."),
   ];
@@ -991,7 +1010,7 @@ export function assembleStoryPackage(input: {
     clips: CLIP_IDS.map((clipId) => clipFromShots(clipId, input.shots, input.graph, input.canon, input.continuitySeed)),
     compiler: {
       schemaVersion: "1.1",
-      promptVersion: "branching-compiler-v2",
+      promptVersion: "branching-compiler-v3",
       model: GEMINI_COMPILER_MODEL,
       compiledAt: Date.now(),
       stages: ["policy", "premises", "premise_rank", "outline", "story_graph", "independent_review", "shot_manifest"].map((id) => ({ id: id as StoryPackage["compiler"]["stages"][number]["id"], status: "passed" as const })),
@@ -1048,7 +1067,8 @@ export function validateStoryPackage(value: unknown, options: { requireParentApp
   const plan = asObject(value, "story package") as unknown as StoryPlan;
   if (
     plan.compiler?.schemaVersion !== "1.1" ||
-    plan.compiler.promptVersion !== "branching-compiler-v2" ||
+    (plan.compiler.promptVersion !== "branching-compiler-v2" &&
+      plan.compiler.promptVersion !== "branching-compiler-v3") ||
     plan.compiler.model !== GEMINI_COMPILER_MODEL ||
     !plan.moralSpec ||
     !plan.premiseSelection ||
@@ -1144,7 +1164,13 @@ export function validateStoryPackage(value: unknown, options: { requireParentApp
   }
 
   validateStoredGraphStructure(plan.graph);
-  const validatedShots = validateShotDraft({ segments: plan.shots }, plan.canon);
+  const validatedShots = validateShotDraft(
+    { segments: plan.shots },
+    plan.canon,
+    plan.compiler.promptVersion === "branching-compiler-v2"
+      ? "legacy_text_only"
+      : "reference_guided",
+  );
   const checks = [
     ...deterministicGraphChecks(plan.graph, plan.canon, plan.premiseCandidates, plan.selectedPremiseId),
     ...shotChecks(validatedShots, plan.canon),

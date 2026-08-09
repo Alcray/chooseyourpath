@@ -10,10 +10,10 @@ from pathlib import Path
 POLICIES = {"ALLOW", "TRANSFORM", "REQUIRE_PARENT_REVIEW", "REJECT"}
 EXPECTED_SHOTS = [
     ("opening", 0, 8),
-    ("positive", 0, 6),
+    ("positive", 0, 8),
     ("positive", 1, 7),
     ("positive", 2, 7),
-    ("negative", 0, 6),
+    ("negative", 0, 8),
     ("negative", 1, 7),
     ("negative", 2, 7),
     ("ending", 0, 8),

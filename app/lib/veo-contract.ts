@@ -1,6 +1,8 @@
-export const GEMINI_VEO_MODEL = "veo-3.1-fast-generate-preview";
+import type { VideoReferenceImage } from "./character-references";
+
+export const GEMINI_VEO_MODEL = "veo-3.1-generate-preview";
 export const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
-export const VERTEX_VEO_MODEL = "veo-3.1-fast-generate-001";
+export const VERTEX_VEO_MODEL = "veo-3.1-generate-001";
 export const VERTEX_LOCATION = "us-central1";
 export const MAX_VIDEO_BYTES = 48 * 1024 * 1024;
 
@@ -35,4 +37,27 @@ export function encodeVideoBase64(bytes: Uint8Array) {
     chunks.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))));
   }
   return chunks.join("");
+}
+
+export function veoReferenceImages(references: ReadonlyArray<VideoReferenceImage>, vertex: boolean) {
+  if (references.length === 0 || references.length > 3) {
+    throw new Error("Veo requires between one and three locked character references.");
+  }
+  if (new Set(references.map((reference) => reference.characterId)).size !== references.length) {
+    throw new Error("Veo character references must be unique.");
+  }
+  return references.map((reference) => ({
+    image: vertex
+      ? {
+          bytesBase64Encoded: encodeVideoBase64(reference.bytes),
+          mimeType: reference.mimeType,
+        }
+      : {
+          inlineData: {
+            data: encodeVideoBase64(reference.bytes),
+            mimeType: reference.mimeType,
+          },
+        },
+    referenceType: "asset",
+  }));
 }

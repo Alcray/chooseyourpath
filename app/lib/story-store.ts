@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import { clips, stories } from "../../db/schema";
+import { characterReferences, clips, stories } from "../../db/schema";
 import { getDb } from "../../db";
 import {
   AGE_BANDS,
@@ -18,6 +18,7 @@ import { GoogleApiError } from "./api-error";
 
 export type StoredClip = typeof clips.$inferSelect;
 export type StoredStory = typeof stories.$inferSelect;
+export type StoredCharacterReference = typeof characterReferences.$inferSelect;
 export type StoryPayloadCompatibility =
   | {
       mode: "playback_only";
@@ -115,12 +116,21 @@ export async function getStoryClips(storyId: string) {
   return getDb().select().from(clips).where(eq(clips.storyId, storyId)).orderBy(asc(clips.createdAt));
 }
 
+export async function getStoryCharacterReferences(storyId: string) {
+  return getDb()
+    .select()
+    .from(characterReferences)
+    .where(eq(characterReferences.storyId, storyId))
+    .orderBy(asc(characterReferences.createdAt));
+}
+
 export function storyPayload(
   story: StoredStory,
   storedClips: StoredClip[],
   options: {
     plan: StoryPlan | PlaybackOnlyStoryPlan;
     brief: StoryBrief;
+    references?: StoredCharacterReference[];
     compatibility?: StoryPayloadCompatibility;
   },
 ) {
@@ -134,6 +144,15 @@ export function storyPayload(
     plan,
     brief,
     ...(options.compatibility ? { compatibility: options.compatibility } : {}),
+    references: (options.references ?? []).map((reference) => ({
+      characterId: reference.characterId,
+      status: reference.status,
+      error: reference.errorMessage ?? null,
+      mediaUrl:
+        reference.status === "ready"
+          ? `/api/stories/${story.id}/references/${reference.characterId}`
+          : null,
+    })),
     clips: CLIP_IDS.map((slot) => {
       const clip = bySlot.get(slot);
       return {

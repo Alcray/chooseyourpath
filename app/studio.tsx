@@ -23,6 +23,12 @@ type JobStatus = "waiting" | "starting" | "rendering" | "extension_retry" | "ext
 type ClipJob = { status: JobStatus; extensionCount: number; error?: string };
 type JobMap = Record<ClipId, ClipJob>;
 type VideoMap = Partial<Record<ClipId, string>>;
+type ReferenceJob = {
+  characterId: string;
+  status: "waiting" | "generating" | "ready" | "failed";
+  error: string | null;
+  mediaUrl: string | null;
+};
 type StoryCompatibility =
   | { mode: "playback_only"; sourceSchemaVersion: "1.0" | null; providerActionsAllowed: false }
   | { mode: "recompile_required"; sourceSchemaVersion: "1.0" | null; targetSchemaVersion: "1.1"; providerActionsAllowed: false };
@@ -34,9 +40,10 @@ type ServerStory = {
   plan: StoryPlan;
   brief: StoryBrief;
   compatibility?: StoryCompatibility;
+  references: ReferenceJob[];
   clips: Array<{
     slot: ClipId;
-    status: "starting" | "rendering" | "extension_retry" | "extending" | "ingesting" | "ready" | "failed";
+    status: JobStatus;
     extensionCount: number;
     error: string | null;
     mediaUrl: string | null;
@@ -151,8 +158,18 @@ function clipExtensionTotal(plan: StoryPlan | null, clipId: ClipId) {
   return Array.isArray(extensions) ? extensions.length : 0;
 }
 
+function clipBaseSeconds(plan: StoryPlan | null, clipId: ClipId) {
+  const shot = plan?.shots?.find((candidate) => candidate.clipId === clipId && candidate.segmentIndex === 0);
+  if (shot?.durationSeconds === 8 || shot?.durationSeconds === 6) return shot.durationSeconds;
+  return clipId === "positive" || clipId === "negative" ? 6 : 8;
+}
+
+function clipTotalSeconds(plan: StoryPlan | null, clipId: ClipId) {
+  return clipBaseSeconds(plan, clipId) + clipExtensionTotal(plan, clipId) * 7;
+}
+
 function clipDurationLabel(plan: StoryPlan | null, clipId: ClipId) {
-  return clipExtensionTotal(plan, clipId) === 2 ? "20 sec" : "8 sec";
+  return `${clipTotalSeconds(plan, clipId)} sec`;
 }
 
 function completedGenerationUnits(plan: StoryPlan | null, clipId: ClipId, job: ClipJob) {
@@ -181,6 +198,8 @@ function clipProgressPercent(plan: StoryPlan | null, clipId: ClipId, job: ClipJo
 
 function clipJobLabel(plan: StoryPlan | null, clipId: ClipId, job: ClipJob) {
   const extensionTotal = clipExtensionTotal(plan, clipId);
+  const baseSeconds = clipBaseSeconds(plan, clipId);
+  const totalSeconds = clipTotalSeconds(plan, clipId);
   if (extensionTotal !== 2) {
     if (job.status === "rendering") return "Generating 8-second scene";
     if (job.status === "ingesting") return "8 seconds generated · saving";
@@ -188,16 +207,16 @@ function clipJobLabel(plan: StoryPlan | null, clipId: ClipId, job: ClipJob) {
     return JOB_STATUS_LABEL[job.status];
   }
 
-  if (job.status === "starting") return "Starting 6-second base · step 1 of 3";
-  if (job.status === "extending" && job.extensionCount === 0) return "6 seconds ready · starting extension 1";
-  if (job.status === "extension_retry" && job.extensionCount === 0) return "6 seconds ready · retrying extension 1";
-  if (job.status === "rendering" && job.extensionCount === 0) return "Generating first 6 seconds · step 1 of 3";
-  if (job.status === "extending" && job.extensionCount === 1) return "13 seconds ready · starting extension 2";
-  if (job.status === "extension_retry" && job.extensionCount === 1) return "13 seconds ready · retrying extension 2";
+  if (job.status === "starting") return `Starting ${baseSeconds}-second base · step 1 of 3`;
+  if (job.status === "extending" && job.extensionCount === 0) return `${baseSeconds} seconds ready · starting extension 1`;
+  if (job.status === "extension_retry" && job.extensionCount === 0) return `${baseSeconds} seconds ready · retrying extension 1`;
+  if (job.status === "rendering" && job.extensionCount === 0) return `Generating first ${baseSeconds} seconds · step 1 of 3`;
+  if (job.status === "extending" && job.extensionCount === 1) return `${baseSeconds + 7} seconds ready · starting extension 2`;
+  if (job.status === "extension_retry" && job.extensionCount === 1) return `${baseSeconds + 7} seconds ready · retrying extension 2`;
   if (job.status === "rendering" && job.extensionCount === 1) return "Extending the consequence · step 2 of 3";
   if (job.status === "rendering" && job.extensionCount === 2) return "Extending the impact · step 3 of 3";
-  if (job.status === "ingesting") return "All 20 seconds generated · saving";
-  if (job.status === "ready") return "20 seconds ready ✓";
+  if (job.status === "ingesting") return `All ${totalSeconds} seconds generated · saving`;
+  if (job.status === "ready") return `${totalSeconds} seconds ready ✓`;
   return JOB_STATUS_LABEL[job.status];
 }
 
@@ -265,6 +284,7 @@ export function StoryStudio() {
   const [plan, setPlan] = useState<StoryPlan | null>(null);
   const [blueprintId, setBlueprintId] = useState<string | null>(null);
   const [jobs, setJobs] = useState<JobMap>(emptyJobs);
+  const [references, setReferences] = useState<ReferenceJob[]>([]);
   const [videoUrls, setVideoUrls] = useState<VideoMap>({});
   const [playback, setPlayback] = useState<PlaybackStage>("intro");
   const [chosenPath, setChosenPath] = useState<"positive" | "negative" | null>(null);
@@ -404,19 +424,29 @@ export function StoryStudio() {
     : 0;
   const readyCount = CLIP_IDS.filter((id) => jobs[id].status === "ready").length;
   const failedCount = CLIP_IDS.filter((id) => jobs[id].status === "failed").length;
+  const readyReferenceCount = references.filter((reference) => reference.status === "ready").length;
+  const failedReferenceCount = references.filter((reference) => reference.status === "failed").length;
+  const activeReferenceCount = references.filter(
+    (reference) => reference.status === "waiting" || reference.status === "generating",
+  ).length;
   const activeCount = CLIP_IDS.filter((id) => ["starting", "rendering", "extension_retry", "extending", "ingesting"].includes(jobs[id].status)).length;
   const queuedCount = CLIP_IDS.filter((id) => jobs[id].status === "waiting").length;
   const stillWorkingCount = activeCount + queuedCount;
   const progressMessage =
-    failedCount > 0
+    failedReferenceCount > 0
+      ? `${failedReferenceCount} character reference${failedReferenceCount === 1 ? " needs" : "s need"} another try before video rendering can continue.`
+      : failedCount > 0
       ? `${failedCount} clip${failedCount === 1 ? " needs" : "s need"} another try; completed clips are safe.`
+      : activeReferenceCount > 0
+        ? `${readyReferenceCount} of ${references.length} locked character references ready. Video rendering starts after both are stored.`
       : readyCount > 0 && stillWorkingCount > 0
         ? `${readyCount} clip${readyCount === 1 ? " is" : "s are"} safely stored; ${stillWorkingCount} still working.`
         : activeCount > 0 && elapsedSeconds >= 60
           ? "Video rendering is usually the longest step. Each clip finishes independently."
           : "Starting and checking every generation stage.";
-  const totalGenerationUnits = CLIP_IDS.reduce((total, id) => total + clipExtensionTotal(plan, id) + 1, 0);
-  const finishedGenerationUnits = CLIP_IDS.reduce(
+  const videoGenerationUnits = CLIP_IDS.reduce((total, id) => total + clipExtensionTotal(plan, id) + 1, 0);
+  const totalGenerationUnits = videoGenerationUnits + references.length;
+  const finishedGenerationUnits = readyReferenceCount + CLIP_IDS.reduce(
     (total, id) => total + completedGenerationUnits(plan, id, jobs[id]),
     0,
   );
@@ -447,11 +477,13 @@ export function StoryStudio() {
       .replace(/\n[ \t]*\n+/g, "\n")
       .replace(/-->/g, "→")
       .trim();
+    const timestamp = (seconds: number) => `00:00:${String(seconds).padStart(2, "0")}.000`;
+    const baseSeconds = clipBaseSeconds(plan, clipId);
     const cues = extensions.length === 2
       ? [
-          `00:00:00.000 --> 00:00:06.000\n${cleanCaption(baseCaption)}`,
-          `00:00:06.000 --> 00:00:13.000\n${cleanCaption(extensions[0].caption)}`,
-          `00:00:13.000 --> 00:00:20.000\n${cleanCaption(extensions[1].caption)}`,
+          `00:00:00.000 --> ${timestamp(baseSeconds)}\n${cleanCaption(baseCaption)}`,
+          `${timestamp(baseSeconds)} --> ${timestamp(baseSeconds + 7)}\n${cleanCaption(extensions[0].caption)}`,
+          `${timestamp(baseSeconds + 7)} --> ${timestamp(baseSeconds + 14)}\n${cleanCaption(extensions[1].caption)}`,
         ]
       : [`00:00:00.000 --> 00:00:08.000\n${cleanCaption(baseCaption)}`];
     return `data:text/vtt;charset=utf-8,${encodeURIComponent(
@@ -732,6 +764,7 @@ export function StoryStudio() {
     setBlueprintId(null);
     setVideoUrls({});
     setJobs(emptyJobs());
+    setReferences([]);
     setError("");
     setIsGenerating(false);
     setRecoveryAnnouncement(message);
@@ -787,6 +820,7 @@ export function StoryStudio() {
       if (clip.mediaUrl) nextUrls[clip.slot] = clip.mediaUrl;
     }
     setJobs(nextJobs);
+    setReferences(serverStory.references ?? []);
     setVideoUrls(nextUrls);
   }
 
@@ -804,6 +838,7 @@ export function StoryStudio() {
       setBlueprintId(result.blueprintId);
       localStorage.removeItem(PENDING_START_STORAGE_KEY);
       setJobs(emptyJobs());
+      setReferences([]);
       setPlayback("intro");
       setChosenPath(null);
       setSensitiveTopicAcknowledged(false);
@@ -882,10 +917,16 @@ export function StoryStudio() {
             .map((clip) => clip.slot),
         );
         const allPlaybackMediaReady = CLIP_IDS.every((clipId) => playableSlots.has(clipId));
-        const active = payload.story.clips.filter((clip) =>
+        const activeClips = payload.story.clips.filter((clip) =>
           clip.status === "starting" || clip.status === "rendering" || clip.status === "extension_retry" || clip.status === "extending" || clip.status === "ingesting"
         ).length;
-        const failed = payload.story.clips.filter((clip) => clip.status === "failed").length;
+        const responseReferences = payload.story.references ?? [];
+        const activeReferences = responseReferences.filter(
+          (reference) => reference.status === "waiting" || reference.status === "generating",
+        ).length;
+        const active = activeClips + activeReferences;
+        const failed = payload.story.clips.filter((clip) => clip.status === "failed").length +
+          responseReferences.filter((reference) => reference.status === "failed").length;
 
         if (ready === 4 && allPlaybackMediaReady) {
           localStorage.removeItem(GENERATION_STORAGE_KEY);
@@ -900,7 +941,7 @@ export function StoryStudio() {
           continue;
         }
         if (active === 0 && failed > 0) {
-          setError(`${failed} clip${failed === 1 ? "" : "s"} need another try. Finished clips are safely stored.`);
+          setError(`${failed} generation item${failed === 1 ? "" : "s"} need another try. Finished work is safely stored.`);
           return;
         }
         const nextDelay = ready > previousReady ? 750 : 3_000;
@@ -927,12 +968,15 @@ export function StoryStudio() {
     setIsGenerating(true);
     setGenerationStartedAt(requestedAt);
     setElapsedSeconds(0);
-    setJobs({
-      opening: { status: "starting", extensionCount: 0 },
-      positive: { status: "starting", extensionCount: 0 },
-      negative: { status: "starting", extensionCount: 0 },
-      ending: { status: "starting", extensionCount: 0 },
-    });
+    setJobs(emptyJobs());
+    setReferences(
+      (planValue.canon?.characterIds ?? []).map((characterId) => ({
+        characterId,
+        status: "waiting",
+        error: null,
+        mediaUrl: null,
+      })),
+    );
 
     try {
       const result = await apiRequest<{ story: ServerStory }>("/api/stories", {
@@ -954,6 +998,7 @@ export function StoryStudio() {
         setBlueprintId(null);
         setVideoUrls({});
         setJobs(emptyJobs());
+        setReferences([]);
         setError("");
         setIsGenerating(false);
         setRecoveryAnnouncement(`${startError.message} The story brief is preserved so you can compile it again.`);
@@ -973,6 +1018,7 @@ export function StoryStudio() {
     setBrief(savedGeneration.brief);
     setPlan(savedGeneration.plan);
     setJobs(emptyJobs());
+    setReferences([]);
     setError("");
     void pollStory(savedGeneration.storyId, savedGeneration.plan, savedGeneration.brief, savedGeneration.startedAt);
   }
@@ -990,6 +1036,7 @@ export function StoryStudio() {
     setError("");
     setVideoUrls({});
     setJobs(emptyJobs());
+    setReferences([]);
     setIsGenerating(false);
     setRecoveryAnnouncement("The older story brief is restored and ready to edit before you create a new blueprint.");
     setStage("brief");
@@ -1037,6 +1084,7 @@ export function StoryStudio() {
     setPlan(null);
     setBlueprintId(null);
     setJobs(emptyJobs());
+    setReferences([]);
     setError("");
     setIsGenerating(false);
     setGenerationStartedAt(null);
@@ -1342,7 +1390,7 @@ export function StoryStudio() {
                   <div><dt>Shared seed</dt><dd>#{plan.continuitySeed}</dd></div>
                 </dl>
                 <div className="lock-list"><span>✓ Same character design</span><span>✓ Same wardrobe + props</span><span>✓ Same world + lighting</span><span>✓ Same narrator voice</span></div>
-                <div className="render-notice"><strong>{compiledPackage ? "Compiler-approved for rendering" : "Ready to render 4 final clips"}</strong><span>{compiledPackage ? "The parent lesson never goes directly to video. This approved graph was compiled into 8 canon-locked segments, assembled as 4 final clips: 8s, 20s, 20s, and 8s." : "Opening and ending are 8 seconds. Each choice path is extended to 20 seconds at 720p with native audio. This may take several minutes and uses video-generation quota."}</span></div>
+                <div className="render-notice"><strong>{compiledPackage ? "Compiler-approved for rendering" : "Ready to render 4 final clips"}</strong><span>{compiledPackage ? `The parent lesson never goes directly to video. This approved graph was compiled into 8 canon-locked segments, assembled as 4 final clips: ${clipDurationLabel(plan, "opening")}, ${clipDurationLabel(plan, "positive")}, ${clipDurationLabel(plan, "negative")}, and ${clipDurationLabel(plan, "ending")}. Character references are generated before video quota is used.` : "Opening and ending are 8 seconds. Each choice path is about 20 seconds at 720p with native audio. This may take several minutes and uses video-generation quota."}</span></div>
                 {compiledPackage?.moralSpec.policyDecision === "REQUIRE_PARENT_REVIEW" && (
                   <div className="sensitive-review-confirmation">
                     <input
@@ -1377,9 +1425,62 @@ export function StoryStudio() {
             </div>
             <div className="progress-panel">
               <div className="progress-summary" aria-live="polite">
-                <div><strong>{readyCount} of 4 clips ready</strong><span>{activeCount > 0 ? `${activeCount} actively working` : failedCount > 0 ? "Waiting for your retry" : "Checking status"}</span></div>
+                <div>
+                  <strong>
+                    {references.length > 0 && readyReferenceCount < references.length
+                      ? `${readyReferenceCount} of ${references.length} character references ready`
+                      : `${readyCount} of 4 clips ready`}
+                  </strong>
+                  <span>
+                    {activeReferenceCount > 0
+                      ? "Locking character appearance first"
+                      : activeCount > 0
+                        ? `${activeCount} clips actively working`
+                        : failedCount + failedReferenceCount > 0
+                          ? "Waiting for your retry"
+                          : "Checking status"}
+                  </span>
+                </div>
                 <span>Elapsed · {formatElapsed(elapsedSeconds)}</span>
               </div>
+              {references.length > 0 && (
+                <div className="reference-stage" data-testid="character-reference-stage">
+                  <div className="reference-stage-copy">
+                    <strong>Character consistency lock</strong>
+                    <span>These approved images are sent to every fresh Veo 3.1 clip.</span>
+                  </div>
+                  <div className="reference-list">
+                    {references.map((reference) => {
+                      const character = selectedPair.characters.find(
+                        (candidate) => candidate.id === reference.characterId,
+                      );
+                      return (
+                        <div className={`reference-item ${reference.status}`} key={reference.characterId}>
+                          {reference.mediaUrl ? (
+                            // The authenticated, same-origin PNG is already fixed at 1K by the provider.
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={reference.mediaUrl} alt={`${character?.name ?? reference.characterId} locked character reference`} />
+                          ) : (
+                            <span aria-hidden="true">{reference.status === "failed" ? "!" : "◌"}</span>
+                          )}
+                          <p>
+                            <strong>{character?.name ?? reference.characterId}</strong>
+                            <small>
+                              {reference.status === "ready"
+                                ? "Reference ready ✓"
+                                : reference.status === "generating"
+                                  ? "Generating reference"
+                                  : reference.status === "failed"
+                                    ? "Needs retry"
+                                    : "Queued first"}
+                            </small>
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div
                 className="generation-line"
                 role="progressbar"
@@ -1434,11 +1535,11 @@ export function StoryStudio() {
               })}
             </div>
 
-            {error && <div className="generation-error" role="alert"><span>!</span><p><strong>{failedCount > 0 ? "Some clips need attention" : "Status refresh paused"}</strong>{error}</p></div>}
-            {!isGenerating && failedCount > 0 && (
-              <button className="main-action centered" type="button" onClick={() => void retryGeneration()}>Retry unfinished clips <span>↻</span></button>
+            {error && <div className="generation-error" role="alert"><span>!</span><p><strong>{failedCount + failedReferenceCount > 0 ? "Some generation work needs attention" : "Status refresh paused"}</strong>{error}</p></div>}
+            {!isGenerating && failedCount + failedReferenceCount > 0 && (
+              <button className="main-action centered" type="button" onClick={() => void retryGeneration()}>{failedReferenceCount > 0 ? "Retry unfinished generation" : "Retry unfinished clips"} <span>↻</span></button>
             )}
-            {!isGenerating && failedCount === 0 && (readyCount < 4 || generationPlaybackMediaIncomplete) && (
+            {!isGenerating && failedCount + failedReferenceCount === 0 && (readyCount < 4 || generationPlaybackMediaIncomplete) && (
               <button className="main-action centered" type="button" onClick={refreshGenerationStatus}>{generationPlaybackMediaIncomplete ? "Recheck missing media" : "Check status again"} <span>↻</span></button>
             )}
           </section>

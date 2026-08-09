@@ -15,6 +15,13 @@
       "when": 1786189572057,
       "tag": "0001_giant_maddog",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786259231295,
+      "tag": "0002_mighty_blizzard",
+      "breakpoints": true
     }
   ]
 }

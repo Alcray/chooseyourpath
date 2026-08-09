@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { getDb, getRawDb } from "../../../../../db";
-import { clips, stories } from "../../../../../db/schema";
+import { characterReferences, clips, stories } from "../../../../../db/schema";
 import { apiErrorResponse, GoogleApiError } from "../../../../lib/google";
 import { validateStoryPackage } from "../../../../lib/story-compiler";
 import {
@@ -61,6 +61,25 @@ export async function POST(request: Request, context: { params: Promise<{ storyI
     );
 
     const d1 = getRawDb();
+    const failedReferences = await db
+      .select()
+      .from(characterReferences)
+      .where(eq(characterReferences.storyId, storyId));
+    const referenceClaims = failedReferences.filter((reference) => reference.status === "failed");
+    const referenceClaimResults = referenceClaims.length > 0
+      ? await d1.batch(
+          referenceClaims.map((reference, index) =>
+            d1
+              .prepare(
+                "UPDATE character_references SET status = ?, r2_key = NULL, mime_type = NULL, error_message = NULL, updated_at = ? WHERE id = ? AND story_id = ? AND status = ? AND updated_at = ?",
+              )
+              .bind("waiting", index, reference.id, storyId, "failed", reference.updatedAt),
+          ),
+        )
+      : [];
+    const restartedReferenceCount = referenceClaimResults.filter(
+      (result: { meta?: { changes?: number } }) => Number(result.meta?.changes ?? 0) === 1,
+    ).length;
     const claimResults = restartableClips.length > 0
       ? await d1.batch(
           restartableClips.map((clip, index) =>
@@ -81,7 +100,7 @@ export async function POST(request: Request, context: { params: Promise<{ storyI
     if (!workflow) throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
     const { status } = workflow;
     await db.update(stories).set({ status, updatedAt: Date.now() }).where(eq(stories.id, storyId));
-    return Response.json({ ok: true, restartedCount }, { status: 202 });
+    return Response.json({ ok: true, restartedCount, restartedReferenceCount }, { status: 202 });
   } catch (error) {
     return apiErrorResponse(error);
   }

@@ -14,6 +14,7 @@ type StoredObjectMetadata = {
 } | null;
 
 const CLIP_WORKFLOW_STATUSES = new Set([
+  "waiting",
   "starting",
   "rendering",
   "extension_retry",
@@ -147,6 +148,9 @@ function hasValidWorkflowState(clip: StoredClip, expectedExtensions: number) {
     clip.extensionCount >= 0 &&
     clip.extensionCount <= expectedExtensions;
   if (!extensionCountValid || !CLIP_WORKFLOW_STATUSES.has(clip.status)) return false;
+  if (clip.status === "waiting") {
+    return clip.extensionCount === 0 && !hasProviderJob(clip) && mediaEmpty;
+  }
   if (clip.status === "starting") {
     return clip.extensionCount === 0 && !hasProviderJob(clip) && mediaEmpty;
   }
@@ -186,13 +190,16 @@ export function summarizeCanonicalClipWorkflow(
   const activeCount = canonical.filter((clip) =>
     ["starting", "rendering", "extension_retry", "extending", "ingesting"].includes(clip.status)
   ).length;
+  const waitingCount = canonical.filter((clip) => clip.status === "waiting").length;
   const failedCount = canonical.filter((clip) => clip.status === "failed").length;
   const status = readyCount === CLIP_IDS.length
     ? "ready"
     : activeCount > 0
       ? "rendering"
+      : waitingCount > 0
+        ? "starting"
       : failedCount > 0
         ? "partial"
         : "starting";
-  return { bySlot, readyCount, activeCount, failedCount, status };
+  return { bySlot, readyCount, activeCount, waitingCount, failedCount, status };
 }

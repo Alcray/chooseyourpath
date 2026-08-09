@@ -2,6 +2,15 @@ import { and, asc, eq, inArray, lt, or } from "drizzle-orm";
 import { getDb, getRawDb } from "../../../../db";
 import { clips, stories } from "../../../../db/schema";
 import { apiErrorResponse, getMediaBucket, GoogleApiError } from "../../../lib/google";
+import {
+  canonicalCharacterReferenceKey,
+  type VideoReferenceImage,
+} from "../../../lib/character-references";
+import {
+  CHARACTER_IMAGE_MODEL,
+  decodeValidatedReferenceImage,
+  getImageProvider,
+} from "../../../lib/image-provider";
 import { decodeValidatedProviderVideo } from "../../../lib/provider-media";
 import { CLIP_IDS, baseClipDuration, isClipId } from "../../../lib/story";
 import { validateStoryPackage } from "../../../lib/story-compiler";
@@ -16,6 +25,7 @@ import {
 } from "../../../lib/story-media";
 import {
   getOwnedStory,
+  getStoryCharacterReferences,
   getStoryClips,
   parseStoredStoryBrief,
   requestOwnerId,
@@ -25,6 +35,60 @@ import {
 import { getVideoProvider, type ProviderPollResult } from "../../../lib/video-provider";
 
 export const dynamic = "force-dynamic";
+
+type StoredReference = Awaited<ReturnType<typeof getStoryCharacterReferences>>[number];
+
+function validateReferenceWorkflow(characterIds: string[], references: StoredReference[]) {
+  if (references.length === 0) return { legacy: true, ready: false, failed: false };
+  const expected = new Set(characterIds);
+  const seen = new Set<string>();
+  for (const reference of references) {
+    if (
+      !expected.has(reference.characterId) ||
+      seen.has(reference.characterId) ||
+      reference.providerModel !== CHARACTER_IMAGE_MODEL ||
+      !["waiting", "generating", "ready", "failed"].includes(reference.status)
+    ) {
+      throw new GoogleApiError("The stored character reference workflow is malformed.", 422);
+    }
+    seen.add(reference.characterId);
+    const mediaEmpty = reference.r2Key === null && reference.mimeType === null;
+    if (
+      (reference.status === "ready" &&
+        (reference.r2Key !== canonicalCharacterReferenceKey(reference.storyId, reference.characterId) ||
+          reference.mimeType !== "image/png")) ||
+      (reference.status !== "ready" && !mediaEmpty)
+    ) {
+      throw new GoogleApiError("The stored character reference media is malformed.", 422);
+    }
+  }
+  if (seen.size !== expected.size || [...expected].some((id) => !seen.has(id))) {
+    throw new GoogleApiError("The character reference set is incomplete.", 422);
+  }
+  return {
+    legacy: false,
+    ready: references.every((reference) => reference.status === "ready"),
+    failed: references.some((reference) => reference.status === "failed"),
+  };
+}
+
+async function loadReadyVideoReferences(references: StoredReference[]): Promise<VideoReferenceImage[]> {
+  const bucket = getMediaBucket();
+  return Promise.all(
+    references.map(async (reference) => {
+      const key = canonicalCharacterReferenceKey(reference.storyId, reference.characterId);
+      const object = await bucket.get(key);
+      if (!object || object.size <= 0 || object.httpMetadata?.contentType !== "image/png") {
+        throw new GoogleApiError("A locked character reference is unavailable. Retry the reference stage.", 422);
+      }
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      if (bytes.byteLength !== object.size) {
+        throw new GoogleApiError("A locked character reference could not be read safely.", 502, true);
+      }
+      return { characterId: reference.characterId, bytes, mimeType: "image/png" as const };
+    }),
+  );
+}
 
 export async function GET(request: Request, context: { params: Promise<{ storyId: string }> }) {
   try {
@@ -43,6 +107,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
 
     const compatibility = classifyStoryPackageCompatibility(storedPlan);
     let initiallyStoredClips = await getStoryClips(storyId);
+    let initiallyStoredReferences = await getStoryCharacterReferences(storyId);
     if (
       compatibility.status === "legacy_requires_recompile" ||
       compatibility.status === "unversioned_requires_recompile"
@@ -68,6 +133,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
             {
               plan: compatibility.playablePlan,
               brief,
+              references: initiallyStoredReferences,
               compatibility: {
                 mode: "playback_only",
                 sourceSchemaVersion: compatibility.sourceSchemaVersion,
@@ -85,6 +151,97 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
 
     const plan = validateStoryPackage(compatibility.storyPackage, { requireParentApproval: true });
     validateStoryPackageMatchesBrief(plan, brief);
+    if (
+      initiallyStoredReferences.length > 0 &&
+      plan.compiler.promptVersion !== "branching-compiler-v3"
+    ) {
+      throw new GoogleApiError(
+        "This story uses an older shot layout and must be recompiled before reference-guided rendering.",
+        409,
+        false,
+        "STORY_RECOMPILE_REQUIRED",
+      );
+    }
+    let referenceWorkflow = validateReferenceWorkflow(plan.canon.characterIds, initiallyStoredReferences);
+    if (!referenceWorkflow.legacy && !referenceWorkflow.ready) {
+      const staleReferenceBefore = Date.now() - 2 * 60 * 1000;
+      const nextReference = initiallyStoredReferences
+        .filter(
+          (reference) =>
+            reference.status === "waiting" ||
+            (reference.status === "generating" && reference.updatedAt < staleReferenceBefore),
+        )
+        .sort((left, right) => left.updatedAt - right.updatedAt)[0];
+
+      if (nextReference) {
+        const claimTime = Date.now();
+        const d1 = getRawDb();
+        const claim = await d1
+          .prepare(
+            "UPDATE character_references SET status = ?, error_message = NULL, updated_at = ? WHERE id = ? AND story_id = ? AND character_id = ? AND status = ? AND updated_at = ? AND r2_key IS NULL AND mime_type IS NULL",
+          )
+          .bind(
+            "generating",
+            claimTime,
+            nextReference.id,
+            storyId,
+            nextReference.characterId,
+            nextReference.status,
+            nextReference.updatedAt,
+          )
+          .run();
+
+        if (Number(claim.meta.changes ?? 0) === 1) {
+          try {
+            const providerImage = await getImageProvider().generate(nextReference.prompt);
+            const validated = decodeValidatedReferenceImage(providerImage);
+            if (!validated) {
+              throw new GoogleApiError("The character image provider returned an invalid PNG image.", 502);
+            }
+            const r2Key = canonicalCharacterReferenceKey(storyId, nextReference.characterId);
+            await getMediaBucket().put(r2Key, validated.bytes, {
+              httpMetadata: { contentType: "image/png", contentDisposition: "inline" },
+            });
+            await d1
+              .prepare(
+                "UPDATE character_references SET status = ?, r2_key = ?, mime_type = ?, error_message = NULL, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?",
+              )
+              .bind("ready", r2Key, "image/png", Date.now(), nextReference.id, "generating", claimTime)
+              .run();
+          } catch (generationError) {
+            const message =
+              generationError instanceof Error
+                ? generationError.message
+                : "The character reference could not be generated.";
+            await d1
+              .prepare(
+                "UPDATE character_references SET status = ?, error_message = ?, updated_at = ? WHERE id = ? AND status = ? AND updated_at = ?",
+              )
+              .bind("failed", message.slice(0, 500), Date.now(), nextReference.id, "generating", claimTime)
+              .run();
+          }
+        }
+      }
+
+      initiallyStoredReferences = await getStoryCharacterReferences(storyId);
+      referenceWorkflow = validateReferenceWorkflow(plan.canon.characterIds, initiallyStoredReferences);
+      const referenceStatus = referenceWorkflow.failed ? "partial" : "references";
+      const referenceUpdatedAt = Date.now();
+      await getDb()
+        .update(stories)
+        .set({ status: referenceStatus, updatedAt: referenceUpdatedAt })
+        .where(eq(stories.id, storyId));
+      return Response.json(
+        {
+          story: storyPayload(
+            { ...story, status: referenceStatus, updatedAt: referenceUpdatedAt },
+            initiallyStoredClips,
+            { plan, brief, references: initiallyStoredReferences },
+          ),
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
     const initialWorkflow = summarizeCanonicalClipWorkflow(initiallyStoredClips, plan);
     if (!initialWorkflow) {
       throw new GoogleApiError("The stored clip workflow is incomplete or malformed.", 422);
@@ -121,7 +278,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
         await getDb().update(stories).set({ status: "ready", updatedAt: Date.now() }).where(eq(stories.id, storyId));
       }
       return Response.json(
-        { story: storyPayload({ ...story, status: "ready" }, initiallyStoredClips, { plan, brief }) },
+        {
+          story: storyPayload(
+            { ...story, status: "ready" },
+            initiallyStoredClips,
+            { plan, brief, references: initiallyStoredReferences },
+          ),
+        },
         { headers: { "Cache-Control": "no-store" } },
       );
     }
@@ -141,7 +304,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
           story: storyPayload(
             { ...story, status: repairedWorkflow.status, updatedAt },
             initiallyStoredClips,
-            { plan, brief },
+            { plan, brief, references: initiallyStoredReferences },
           ),
         },
         { headers: { "Cache-Control": "no-store" } },
@@ -162,6 +325,7 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
           eq(clips.storyId, storyId),
           inArray(clips.slot, [...CLIP_IDS]),
           or(
+            eq(clips.status, "waiting"),
             and(eq(clips.status, "starting"), lt(clips.updatedAt, staleStartBefore)),
             and(eq(clips.status, "rendering"), lt(clips.updatedAt, stalePollBefore)),
             and(eq(clips.status, "extension_retry"), lt(clips.updatedAt, stalePollBefore)),
@@ -193,7 +357,12 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
             const operationName = await videoProvider.start(
               planClip.prompt,
               plan.continuitySeed,
-              extensions.length === 2 ? baseClipDuration(nextClip.slot) : 8,
+              extensions.length === 2
+                ? baseClipDuration(nextClip.slot, !referenceWorkflow.legacy)
+                : 8,
+              referenceWorkflow.legacy
+                ? []
+                : await loadReadyVideoReferences(initiallyStoredReferences),
             );
             await d1
               .prepare(
@@ -300,7 +469,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
               .run();
             if (Number(extensionClaim.meta.changes ?? 0) === 0) {
               return Response.json(
-                { story: storyPayload(story, await getStoryClips(storyId), { plan, brief }) },
+                {
+                  story: storyPayload(story, await getStoryClips(storyId), {
+                    plan,
+                    brief,
+                    references: initiallyStoredReferences,
+                  }),
+                },
                 { headers: { "Cache-Control": "no-store" } },
               );
             }
@@ -364,7 +539,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
               .run();
             if ((claim.meta.changes ?? 0) === 0) {
               return Response.json(
-                { story: storyPayload(story, await getStoryClips(storyId), { plan, brief }) },
+                {
+                  story: storyPayload(story, await getStoryClips(storyId), {
+                    plan,
+                    brief,
+                    references: initiallyStoredReferences,
+                  }),
+                },
                 { headers: { "Cache-Control": "no-store" } },
               );
             }
@@ -439,7 +620,13 @@ export async function GET(request: Request, context: { params: Promise<{ storyId
     const refreshedStory = { ...story, status, updatedAt: Date.now() };
 
     return Response.json(
-      { story: storyPayload(refreshedStory, storedClips, { plan, brief }) },
+      {
+        story: storyPayload(refreshedStory, storedClips, {
+          plan,
+          brief,
+          references: initiallyStoredReferences,
+        }),
+      },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

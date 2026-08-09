@@ -45,12 +45,15 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     mediaRoute,
     veo,
     videoProvider,
+    imageProvider,
+    characterReferences,
     providerMedia,
     storyStore,
     storyPackageBinding,
     storyMedia,
     schema,
     migration,
+    referenceMigration,
     viteConfig,
     hosting,
   ] = await Promise.all([
@@ -67,12 +70,15 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     readFile(new URL("../app/api/stories/[storyId]/clips/[slot]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/veo.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/video-provider.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/image-provider.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/character-references.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/provider-media.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/story-store.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/story-package-binding.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lib/story-media.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0001_giant_maddog.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0002_mighty_blizzard.sql", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
     access(new URL("../public/og.png", import.meta.url)),
@@ -93,11 +99,11 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(studio, /\/api\/stories\/\$\{storyId\}/);
   assert.match(studio, /className="progress-track"/);
   assert.match(studio, /aria-valuenow=\{readyCount\}/);
-  assert.match(studio, /00:00:06\.000 --> 00:00:13\.000/);
-  assert.match(studio, /00:00:13\.000 --> 00:00:20\.000/);
+  assert.match(studio, /timestamp\(baseSeconds \+ 7\)/);
+  assert.match(studio, /timestamp\(baseSeconds \+ 14\)/);
   assert.match(studio, /extensionCount: clip\.extensionCount \?\? 0/);
   assert.match(studio, /generation stages complete/);
-  assert.match(studio, /Each choice path is extended to 20 seconds/);
+  assert.match(studio, /Each choice path is about 20 seconds/);
   assert.match(studio, /const playbackStartAvailable = Boolean\(videoUrls\.opening\)/);
   assert.match(studio, /compatibility\?\.mode === "playback_only" \|\| savedGeneration\.status === "ready"/);
   assert.match(studio, /const generationPlaybackMediaIncomplete = readyCount === CLIP_IDS\.length/);
@@ -150,12 +156,13 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(storyRoute, /classifyStoryPackageCompatibility/);
   assert.match(storyRoute, /sensitiveTopicAcknowledged/);
   assert.ok(
-    storyRoute.indexOf("approveStoryPackageForRender(compatibility.storyPackage") < storyRoute.indexOf("const videoProvider = getVideoProvider()"),
-    "parent approval must be validated before a video provider can start",
+    storyRoute.indexOf("approveStoryPackageForRender(compatibility.storyPackage") < storyRoute.indexOf("INSERT OR IGNORE INTO character_references"),
+    "parent approval must be validated before character-reference work is persisted",
   );
-  assert.match(storyRoute, /getVideoProvider/);
+  assert.doesNotMatch(storyRoute, /getVideoProvider|getImageProvider/);
   assert.doesNotMatch(storyRoute, /startVeoClip/);
-  assert.match(storyRoute, /baseClipDuration\(clip\.id\)/);
+  assert.match(storyRoute, /buildCharacterReferencePrompt/);
+  assert.match(storyRoute, /"waiting"/);
   assert.match(storyRoute, /INSERT OR IGNORE INTO stories[\s\S]*VALUES \(\?, \?, \?, \?, \?, \?, \?, \?\)/);
   assert.doesNotMatch(storyRoute, /MAX_NEW_STORIES_PER_WINDOW|STORY_WINDOW_MS|three new stories every 24 hours/);
   assert.match(statusRoute, /validateStoryPackage/);
@@ -170,6 +177,9 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     "unversioned compatibility must be decided before a video provider can run",
   );
   assert.match(statusRoute, /videoProvider\.poll/);
+  assert.match(statusRoute, /getImageProvider\(\)\.generate/);
+  assert.match(statusRoute, /loadReadyVideoReferences/);
+  assert.match(statusRoute, /referenceWorkflow\.legacy/);
   assert.match(statusRoute, /videoProvider\.extend/);
   assert.match(statusRoute, /decodeValidatedProviderVideo/);
   assert.ok(
@@ -177,7 +187,7 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
     "provider media must be validated and decoded before any extension call",
   );
   assert.ok(
-    statusRoute.indexOf("decodeValidatedProviderVideo(providerResultVideo") < statusRoute.indexOf("getMediaBucket().put"),
+    statusRoute.indexOf("decodeValidatedProviderVideo(providerResultVideo") < statusRoute.indexOf("getMediaBucket().put(r2Key, completedVideo.bytes"),
     "provider media must be validated and decoded before storage",
   );
   assert.match(statusRoute, /contentType: "video\/mp4"/);
@@ -198,8 +208,13 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(veo, /fetchPredictOperation/);
   assert.doesNotMatch(veo, /mimeType: video\.mimeType \?\? "video\/mp4"/);
   assert.match(videoProvider, /interface VideoProvider/);
-  assert.match(videoProvider, /google-veo-3\.1-fast/);
+  assert.match(videoProvider, /google-veo-3\.1/);
+  assert.doesNotMatch(videoProvider, /google-veo-3\.1-fast/);
   assert.match(videoProvider, /start: startVeoClip/);
+  assert.match(imageProvider, /CHARACTER_IMAGE_MODEL/);
+  assert.match(imageProvider, /imageGenerationRequest\(prompt, vertex\)/);
+  assert.match(characterReferences, /production reference image/);
+  assert.match(characterReferences, /No other characters/);
   assert.match(providerMedia, /candidate\.mimeType !== "video\/mp4"/);
   assert.match(providerMedia, /value instanceof Uint8Array && value\.byteLength > 0/);
   assert.match(storyStore, /extensionCount: clip\?\.extensionCount \?\? 0/);
@@ -209,7 +224,9 @@ test("keeps the four-clip workflow and hosted assets wired", async () => {
   assert.match(storyPackageBinding, /plan\.canon\.visualStyle === pair\.style/);
   assert.match(storyPackageBinding, /plan\.canon\.narratorVoiceId === expectedNarratorVoiceId/);
   assert.match(schema, /extensionCount: integer\("extension_count"\)\.notNull\(\)\.default\(0\)/);
+  assert.match(schema, /characterReferences = sqliteTable/);
   assert.match(migration, /ADD `extension_count` integer DEFAULT 0 NOT NULL/);
+  assert.match(referenceMigration, /CREATE TABLE `character_references`/);
   assert.match(retryRoute, /extension_count = 0/);
   assert.match(retryRoute, /STORY_RECOMPILE_REQUIRED/);
   assert.match(retryRoute, /inspectStoredPlaybackMedia/);

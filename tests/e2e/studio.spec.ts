@@ -43,7 +43,7 @@ test("creates, tracks, and plays both branches without replacing video elements"
     clips,
     compiler: {
       schemaVersion: "1.1" as const,
-      promptVersion: "branching-compiler-v2" as const,
+      promptVersion: "branching-compiler-v3" as const,
       model: "gemini-3.5-flash-lite",
       compiledAt: Date.now(),
       stages: ["policy", "premises", "premise_rank", "outline", "story_graph", "independent_review", "shot_manifest"].map((id) => ({ id, status: "passed" as const })),
@@ -149,6 +149,12 @@ test("creates, tracks, and plays both branches without replacing video elements"
           createdAt: Date.now(),
           plan: approvedPlan,
           brief,
+          references: approvedPlan.canon.characterIds.map((characterId) => ({
+            characterId,
+            status: "waiting",
+            error: null,
+            mediaUrl: null,
+          })),
           clips: plan.clips.map((clip) => ({
             slot: clip.id,
             status: "rendering",
@@ -188,6 +194,12 @@ test("creates, tracks, and plays both branches without replacing video elements"
           createdAt: Date.now(),
           plan: approvedPlan,
           brief,
+          references: approvedPlan.canon.characterIds.map((characterId) => ({
+            characterId,
+            status: "ready",
+            error: null,
+            mediaUrl: `/api/stories/${uiStoryId}/references/${characterId}`,
+          })),
           clips: plan.clips.map((clip) => {
             const [status, extensionCount] = states[clip.id as keyof typeof states];
             return {
@@ -249,10 +261,11 @@ test("creates, tracks, and plays both branches without replacing video elements"
   await generateButton.click();
 
   const stageProgress = page.getByRole("progressbar", { name: "Generation stages completed" });
-  await expect(stageProgress).toHaveAttribute("aria-valuemax", "8");
-  await expect(stageProgress).toHaveAttribute("aria-valuenow", "5");
-  await expect(stageProgress).toHaveAttribute("aria-valuetext", "5 of 8 generation stages complete");
-  await expect(page.getByTestId("generation-progress-fill")).toHaveAttribute("style", /width: 63%/);
+  await expect(stageProgress).toHaveAttribute("aria-valuemax", "10");
+  await expect(stageProgress).toHaveAttribute("aria-valuenow", "7");
+  await expect(page.getByTestId("character-reference-stage")).toBeVisible();
+  await expect(stageProgress).toHaveAttribute("aria-valuetext", "7 of 10 generation stages complete");
+  await expect(page.getByTestId("generation-progress-fill")).toHaveAttribute("style", /width: 70%/);
   await expect(page.getByRole("progressbar", { name: "Video clips ready" })).toHaveAttribute("aria-valuetext", "2 of 4 clips ready");
   await expect(page.getByText("2 of 4 clips ready")).toBeVisible();
   await expect(page.getByText("Extending the consequence · step 2 of 3").first()).toBeVisible();

@@ -88,9 +88,10 @@ try {
   const before = sqlite(`
     SELECT
       (SELECT COUNT(*) FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}) || '|' ||
-      (SELECT COUNT(*) FROM clips WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}));
+      (SELECT COUNT(*) FROM clips WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)})) || '|' ||
+      (SELECT COUNT(*) FROM character_references WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}));
   `);
-  assert.equal(before, "0|0");
+  assert.equal(before, "0|0|0");
 
   const response = await fetch(`${baseUrl}/api/stories`, {
     method: "POST",
@@ -105,12 +106,14 @@ try {
   const after = sqlite(`
     SELECT
       (SELECT COUNT(*) FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}) || '|' ||
-      (SELECT COUNT(*) FROM clips WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}));
+      (SELECT COUNT(*) FROM clips WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)})) || '|' ||
+      (SELECT COUNT(*) FROM character_references WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)}));
   `);
-  assert.equal(after, "0|0", "approval rejection must happen before story/clip jobs are persisted");
-  console.log("story-approval-route-live: ok (400 response, zero story rows, zero clip jobs)");
+  assert.equal(after, "0|0|0", "approval rejection must happen before any story, reference, or clip work is persisted");
+  console.log("story-approval-route-live: ok (400 response, zero story rows, zero references, zero clip jobs)");
 } finally {
   sqlite(`
+    DELETE FROM character_references WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)});
     DELETE FROM clips WHERE story_id IN (SELECT id FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)});
     DELETE FROM stories WHERE idempotency_key = ${sqlQuote(idempotencyKey)};
     DELETE FROM blueprints WHERE id = ${sqlQuote(blueprintId)};

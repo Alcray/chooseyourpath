@@ -105,6 +105,15 @@ test("assembles and revalidates a convergent four-clip StoryPackage", () => {
   assert.deepEqual(storyPackage.clips.map((clip) => clip.id), ["opening", "positive", "negative", "ending"]);
   assert.deepEqual(storyPackage.clips.map((clip) => clip.extensions.length), [0, 2, 2, 0]);
   assert.equal(storyPackage.shots.length, 8);
+  assert.equal(storyPackage.compiler.promptVersion, "branching-compiler-v3");
+  assert.deepEqual(
+    storyPackage.clips.map((clip) =>
+      storyPackage.shots
+        .filter((shot) => shot.clipId === clip.id)
+        .reduce((total, shot) => total + shot.durationSeconds, 0),
+    ),
+    [8, 22, 22, 8],
+  );
   assert.equal(storyPackage.validation.checks.every((check) => check.passed), true);
   assert.match(storyPackage.clips[0].prompt, /Locked visual canon/);
   assert.match(storyPackage.clips[1].extensions[0].prompt, /Provider continuation/);
