@@ -7,6 +7,7 @@ import { videoRouter } from "./routes/video.js";
 import { videoGenerator } from "./services/videoGenerator/index.js";
 import { narrationGenerator } from "./services/narrationGenerator/index.js";
 import { storyAiEnabled } from "./services/storyGenerator/index.js";
+import { choiceImageGenerator } from "./services/choiceImageGenerator/index.js";
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
@@ -25,6 +26,7 @@ app.get("/api/health", (_req, res) => {
     storyAiEnabled,
     videoProvider: videoGenerator.name,
     narrationProvider: narrationGenerator.name,
+    choiceImageProvider: choiceImageGenerator.name,
   });
 });
 
@@ -41,4 +43,8 @@ app.listen(PORT, () => {
   );
   console.log(`Video generation: ${videoGenerator.name}` + (videoGenerator.name === "mock" ? " (set VEO_API_KEY + VEO_PROJECT_ID to enable real video)" : ""));
   console.log(`Narration: ${narrationGenerator.name}` + (narrationGenerator.name === "silent" ? " (set GOOGLE_APPLICATION_CREDENTIALS to enable Armenian narration audio)" : ""));
+  console.log(
+    `Choice previews: ${choiceImageGenerator.name}` +
+      (choiceImageGenerator.name === "disabled" ? " (set VERTEX_API_KEY + VERTEX_PROJECT_ID, or reuse VEO_API_KEY + VEO_PROJECT_ID, to enable Nano Banana 2)" : "")
+  );
 });

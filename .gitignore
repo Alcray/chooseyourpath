@@ -17,3 +17,9 @@ server/service-account.json
 # Local editor/tooling config (not project source)
 .claude/
 .idea/
+
+# Framework/build artifacts that may be produced by alternate deployments
+.next/
+.vinext/
+.wrangler/
+next-env.d.ts

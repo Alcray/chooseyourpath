@@ -39,6 +39,7 @@ export interface Choice {
   label: string;
   icon: string;
   description: string;
+  imageUrl?: string;
 }
 
 export interface ReflectionOption {
@@ -79,7 +80,7 @@ export interface StoryTree {
     choices: Choice[];
   };
   branches: Branch[];
-  generatedBy: "template" | "anthropic";
+  generatedBy: "template" | "anthropic" | "gemini";
 }
 
 export interface OptionsResponse {

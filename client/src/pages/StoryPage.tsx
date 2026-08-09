@@ -10,6 +10,7 @@ import { useStoryProgress } from "../hooks/useStoryProgress";
 import { PageShell } from "../components/PageShell";
 import { SceneStage } from "../components/SceneStage";
 import { ChoiceCard } from "../components/ChoiceCard";
+import { FutureChoiceCard } from "../components/FutureChoiceCard";
 import { PrimaryButton } from "../components/PrimaryButton";
 import { LoadingScene } from "../components/LoadingScene";
 import { PreparingStory } from "../components/PreparingStory";
@@ -132,8 +133,9 @@ export function StoryPage() {
       <PageShell title={story.decision.prompt} subtitle={t("story.decisionSubtitle")}>
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           {story.decision.choices.map((choice, i) => (
-            <ChoiceCard
+            <FutureChoiceCard
               key={choice.id}
+              imageUrl={choice.imageUrl}
               icon={choice.icon}
               label={choice.label}
               description={choice.description}

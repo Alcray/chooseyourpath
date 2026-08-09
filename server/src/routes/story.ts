@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { findCharacter, findLesson, findSetting } from "../data/options.js";
 import { CustomLessonRequiresAiError, generateStory } from "../services/storyGenerator/index.js";
+import { addChoiceImages } from "../services/choiceImageGenerator/index.js";
 import { ensureSceneGeneration, getSceneStatus, sceneKeyFor } from "../services/sceneOrchestrator.js";
 import { getStory, saveStory } from "../store/storyStore.js";
 import type { CharacterBible, Scene, StoryRequest, StoryTree } from "../types/story.js";
@@ -62,7 +63,7 @@ storyRouter.post("/", async (req, res) => {
   }
 
   try {
-    const story = await generateStory(
+    const generatedStory = await generateStory(
       { lessonId, customLesson: trimmedCustomLesson, characterId, settingId },
       {
         lessonName: lesson?.name ?? trimmedCustomLesson!,
@@ -75,6 +76,7 @@ storyRouter.post("/", async (req, res) => {
         environment: setting.environment,
       }
     );
+    const story = await addChoiceImages(generatedStory, character.bible, setting.environment);
 
     saveStory(story, character.bible, setting.environment);
     pregenerateAllScenes(story, character.bible, setting.environment);

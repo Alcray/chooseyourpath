@@ -73,6 +73,10 @@ export interface Choice {
   label: string; // Armenian
   icon: string;
   description: string; // Armenian
+  // Generated visual preview of the immediate future on this branch. Optional
+  // because the story must remain playable if Vertex is not configured or an
+  // individual image request is rejected by the provider.
+  imageUrl?: string;
 }
 
 export interface ReflectionOption {
