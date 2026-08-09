@@ -1,0 +1,35 @@
+# Render blueprint — deploys the whole app as ONE service: the Express server
+# both exposes /api and serves the built React client (see server/src/index.ts).
+#
+# Secrets are deliberately NOT listed here. `sync: false` means Render prompts
+# for each value on first deploy and stores it encrypted, so no key is ever
+# committed to the repo.
+#
+# Free-plan caveats worth knowing:
+#   • The service spins down after ~15 minutes idle; the next request pays a
+#     cold start (roughly a minute for Node) before anything renders.
+#   • The filesystem is ephemeral. server/public/generated/ is wiped on every
+#     restart and redeploy, so the video/audio cache starts empty and scenes
+#     regenerate (costing real Veo/TTS spend) after each spin-down.
+services:
+  - type: web
+    name: wonder-tales
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # --- Video generation (Veo 3 on Vertex AI) ---
+      - key: VEO_API_KEY
+        sync: false
+      - key: VEO_PROJECT_ID
+        sync: false
+      # --- Story text + narration (also powers the Vertex TTS path) ---
+      - key: GEMINI_API_KEY
+        sync: false
+      # --- Narration fallback if the Google quotas run dry ---
+      - key: OPENAI_API_KEY
+        sync: false

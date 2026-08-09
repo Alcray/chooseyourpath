@@ -32,6 +32,42 @@ To enable generated moral-choice previews, set `VERTEX_API_KEY` in
 Vertex keys also need `VERTEX_PROJECT_ID`. Existing Veo deployments need no
 extra configuration because their credentials are reused automatically.
 
+## Deploying (Render free tier)
+
+The whole app deploys as **one** service: in production the Express server both
+exposes `/api` and serves the built React client, so there's no separate
+frontend host and no CORS/proxy setup.
+
+The repo includes `render.yaml`, so on Render: **New → Blueprint**, point it at
+this repo, and it will pick up the build/start commands automatically. It then
+prompts for the API keys (`VEO_API_KEY`, `VEO_PROJECT_ID`, `GEMINI_API_KEY`,
+`OPENAI_API_KEY`) and stores them encrypted — none are committed here.
+
+To configure it by hand instead:
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm ci && npm run build` |
+| Start command | `npm start` |
+| Health check path | `/api/health` |
+| `NODE_VERSION` | `22` |
+
+Verify a deploy by hitting `/api/health`, which reports which provider each
+subsystem resolved to.
+
+### Free-tier caveats
+
+- **Cold starts.** The service sleeps after ~15 minutes idle, so the first visit
+  waits roughly a minute before anything renders — on top of the ~100s the app
+  already spends generating a story's scenes upfront.
+- **Ephemeral disk.** `server/public/generated/` is wiped on every restart and
+  redeploy, so the video/audio cache starts empty and scenes regenerate (at real
+  Veo/TTS cost) after each spin-down. Persisting it needs a paid disk or object
+  storage.
+- **No access control.** Anyone with the URL can trigger paid generations; each
+  story is roughly seven Veo calls. Keep the link private, or add a password
+  gate and a per-day cap before sharing it widely.
+
 ## Project layout
 
 ```

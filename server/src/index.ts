@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import express from "express";
 import cors from "cors";
 import { optionsRouter } from "./routes/options.js";
@@ -33,6 +34,27 @@ app.get("/api/health", (_req, res) => {
 app.use("/api/options", optionsRouter);
 app.use("/api/story", storyRouter);
 app.use("/api/video", videoRouter);
+
+// --- Production: serve the built client from this same service ---
+// In development the client runs on its own Vite dev server, which proxies
+// /api and /generated here (see client/vite.config.ts). In a deployed
+// single-service setup (e.g. Render) there is no Vite, so Express serves the
+// built SPA itself. Registered AFTER the API routes so it can never shadow them.
+const clientDist = process.env.CLIENT_DIST_PATH
+  ? path.resolve(process.env.CLIENT_DIST_PATH)
+  : path.resolve(process.cwd(), "..", "client", "dist");
+
+if (existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  // SPA fallback: React Router owns /lesson, /character, /story, … so a deep
+  // link or refresh on those paths must return index.html rather than 404.
+  // Unmatched /api and /generated paths are excluded so a genuine backend 404
+  // stays a 404 instead of silently returning the HTML shell.
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/") || req.path.startsWith("/generated/")) return next();
+    res.sendFile(path.join(clientDist, "index.html"));
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`Moral cartoon server listening on http://localhost:${PORT}`);
