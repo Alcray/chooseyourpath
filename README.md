@@ -1,0 +1,40 @@
+# Wonder Tales — AI Moral Cartoon Generator (MVP)
+
+Interactive, illustrated moral stories for kids aged 5–10. A child picks a
+lesson, a character, and a setting; an AI (or offline template) writes a short
+branching story; the child makes a choice at a decision point using large
+visual cards, sees the consequence, answers a simple reflection question, and
+gets a positive summary.
+
+## Stack
+
+- **Frontend**: React + TypeScript + Vite, Tailwind CSS, Framer Motion, Zustand, React Router.
+- **Backend**: Node.js + Express + TypeScript.
+- **Story generation**: pluggable `StoryProvider` — a local template provider (no API key, fully offline) and an Anthropic (Claude) provider used automatically when `ANTHROPIC_API_KEY` is set, with automatic fallback to templates on error.
+- **Scene visuals**: pluggable `MediaProvider` — an illustration placeholder (gradient + animated emoji sprites) today; a `VideoMediaProvider` stub documents exactly how to wire in a real video-generation API later without touching routes or the frontend.
+
+## Run locally
+
+```bash
+npm install         # installs both workspaces
+npm run dev          # runs server (:4000) and client (:5173) together
+```
+
+Then open http://localhost:5173.
+
+To enable real AI story generation, copy `server/.env.example` to `server/.env`
+and set `ANTHROPIC_API_KEY`. Without it, the app runs entirely offline using
+hand-written story templates for all 6 lessons.
+
+## Project layout
+
+```
+server/   Express API — story generation + media (illustration) generation
+client/   React app — lesson/character/setting pickers, story player, summary
+```
+
+## Extending later
+
+- **Real video generation**: implement `server/src/services/mediaGenerator/providers/videoProvider.ts`, then set `MEDIA_PROVIDER=video`. The `Scene.media` shape (`{ type: "video", url }`) is already handled by `SceneStage.tsx` on the frontend.
+- **More decision points / longer stories**: extend `StoryTree`/`Branch` types and templates; the current MVP ships one decision point per story by design.
+- **More lessons**: add an entry to `LESSON_TEMPLATES` in `server/src/services/storyGenerator/templates.ts` and to `LESSONS` in `server/src/data/options.ts`.
